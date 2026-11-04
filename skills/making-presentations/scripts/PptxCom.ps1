@@ -92,6 +92,22 @@ function Set-SwapPicture($slide, [string]$file) {
     $old.Delete(); $new
 }
 
+# A picture cropped to fill a box exactly (photos, full-bleed covers), centred; the crop stays editable.
+function Add-PictureFill($slide, [string]$file, $left, $top, $width, $height) {
+    $m = $slide.Shapes.AddPicture((Resolve-Path $file).Path, 0, -1, 0, 0)
+    # Crops are measured on the picture's own size, and PowerPoint may have shrunk it on insert: reset first.
+    $m.ScaleHeight(1, -1); $m.ScaleWidth(1, -1)
+    $m.LockAspectRatio = 0
+    $w0 = $m.Width; $h0 = $m.Height
+    if ($w0 / $h0 -gt $width / $height) {
+        $c = [single](($w0 - $h0 * $width / $height) / 2); $m.PictureFormat.CropLeft = $c; $m.PictureFormat.CropRight = $c
+    } else {
+        $c = [single](($h0 - $w0 * $height / $width) / 2); $m.PictureFormat.CropTop = $c; $m.PictureFormat.CropBottom = $c
+    }
+    $m.Left = [single]$left; $m.Top = [single]$top; $m.Width = [single]$width; $m.Height = [single]$height
+    $m
+}
+
 # Embeds a video that plays when the slide opens; $poster is the still shown before it plays.
 # Compress first (H.264, CRF 24-28): PowerPoint embeds the file as it is.
 function Add-Video($slide, [string]$file, [string]$poster, $left, $top, $width, $height) {

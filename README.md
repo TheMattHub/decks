@@ -4,9 +4,9 @@
 
 An agent skill for making presentations, packaged as a Claude Code plugin. It takes a deck from a short brief to the file you present: a structure chosen by the kind of talk (consultancy, research, marketing, internal), the story and look drafted in Claude Slides or on your company template, and a native PowerPoint file finished and edited with PowerPoint itself, so videos, transitions, build-ins, fonts and equations stay real and editable.
 
-[![A four-slide demo deck built by the plugin: a cover, a row of big-number cards, a slide with a native PowerPoint equation, and a dark section divider](docs/screenshots/demo-deck.png)](docs/screenshots/demo-deck.png)
+[![Six slides of an image-led marketing deck for a fictional outdoor brand: a full-bleed cover, picture cards, a customer quote, big numbers, a campaign timeline and a closing slide](docs/screenshots/marketing-deck.png)](docs/screenshots/marketing-deck.png)
 
-<sub>A fictional demo deck built end to end by the scripts: every word, card and the equation are editable in PowerPoint.</sub>
+<sub>A fictional marketing deck built by the scripts on a template generated from a palette: pictures cropped to fill, every word editable in PowerPoint.</sub>
 
 ## What it does
 
@@ -16,9 +16,21 @@ An agent skill for making presentations, packaged as a Claude Code plugin. It ta
 - **Editable slides**: tables, cards and steps as native elements, equations as native PowerPoint math from LaTeX, charts as images regenerated from data.
 - **Review and size**: a leftover check (placeholders, TODOs, file paths), slide renders scored on content, design and coherence, and a media report with a compressed copy.
 
-## Screenshots
+## Example decks
+
+Two fictional decks in two styles, both rebuilt from scripts in [`examples/`](examples/): a warm, image-led **marketing** deck, and a clean, data-led **consultancy** deck with a native equation.
 
 <table>
+<tr>
+<td width="50%" valign="top" align="center">
+<a href="docs/screenshots/marketing-cover.png"><img src="docs/screenshots/marketing-cover.png" alt="Cover slide: a full-bleed dawn landscape with the title Walk further, carry less" width="100%"></a>
+<br><sub><b>Marketing</b>: full-bleed pictures, warm palette</sub>
+</td>
+<td width="50%" valign="top" align="center">
+<a href="docs/screenshots/demo-deck.png"><img src="docs/screenshots/demo-deck.png" alt="Four slides of a consultancy deck: cover, big-number cards, an equation slide and a dark section divider" width="100%"></a>
+<br><sub><b>Consultancy</b>: big numbers, native equation</sub>
+</td>
+</tr>
 <tr>
 <td width="50%" valign="top" align="center">
 <a href="docs/screenshots/equation-slide.png"><img src="docs/screenshots/equation-slide.png" alt="A slide with a summation written in LaTeX and converted to a native, editable PowerPoint equation" width="100%"></a>
@@ -74,7 +86,7 @@ Ask for a presentation, a shorter version of one, or changes to a deck. The skil
 | `scripts/pptx_media.py` | Media report and a compressed copy of a .pptx |
 | `scripts/pptx_equations.py` | `$$latex$$` paragraphs in a .pptx to native, editable equations |
 
-`examples/build_demo.ps1` builds the demo template, deck and the images above from fictional content.
+`examples/build_marketing_demo.ps1` and `examples/build_demo.ps1` build the example templates, decks and the images above from fictional content; `examples/make_art.py` draws the illustrations.
 
 ## Contributing
 

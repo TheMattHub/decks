@@ -17,6 +17,7 @@
 | `Open-Deck path [-ReadOnly]` / `Save-Deck s [path]` / `Close-Deck s` | Open without a window. Read-write mode refuses while another program holds the file, and backs it up first. Save embeds fonts. Close leaves a PowerPoint that was already running open |
 | `Find-Slide deck regex`, `Find-Shape slide regex`, `Get-Picture slide` | Find slides and shapes by text |
 | `Set-Notes`, `Add-TextBox`, `Set-FitInto`, `Set-SwapPicture` | Notes, a fixed text box (colour as "#RRGGBB"), fit into a frame, swap a picture in its box |
+| `Add-PictureFill slide file l t w h` | A photo cropped to fill a box exactly (full-bleed covers, image cards); the crop stays editable |
 | `Add-Video slide file poster l t w h` | Embed a video that plays when the slide opens, with a poster frame |
 | `Set-Transition slide effect dur`, `Add-BuildIn slide shapes effect trigger` | Native transitions (`$PpFade`, `$PpPushUp`, `$PpMorph`) and build-in groups |
 | `Export-SlidePngs deck dir [width]` | One PNG per slide, to look at |
