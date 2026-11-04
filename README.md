@@ -1,6 +1,19 @@
-# decks
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/decks-mark-dark.svg">
+    <img src="docs/logo/decks-mark-light.svg" alt="decks logo: three slides fanned out, the drafts v6 and final_v7 underneath and the last version on top with a tick" width="150">
+  </picture>
+</p>
 
-[![Tests](https://github.com/TheMattHub/decks/actions/workflows/tests.yml/badge.svg)](https://github.com/TheMattHub/decks/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-SKILL.md-orange)](https://agentskills.io)
+<h1 align="center">decks</h1>
+
+<p align="center"><i>the last version</i></p>
+
+<p align="center">
+  <a href="https://github.com/TheMattHub/decks/actions/workflows/tests.yml"><img src="https://github.com/TheMattHub/decks/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://agentskills.io"><img src="https://img.shields.io/badge/Agent%20Skills-SKILL.md-orange" alt="Agent Skills"></a>
+</p>
 
 An agent skill for making presentations, packaged as a Claude Code plugin. It takes a deck from a short brief to the file you present: a structure chosen by the kind of talk (consultancy, research, marketing, internal), the story and look drafted in Claude Slides or on your company template, and a native PowerPoint file finished and edited with PowerPoint itself, so videos, transitions, build-ins, fonts and equations stay real and editable.
 
@@ -86,7 +99,7 @@ Ask for a presentation, a shorter version of one, or changes to a deck. The skil
 | `scripts/pptx_media.py` | Media report and a compressed copy of a .pptx |
 | `scripts/pptx_equations.py` | `$$latex$$` paragraphs in a .pptx to native, editable equations |
 
-`examples/build_marketing_demo.ps1` and `examples/build_demo.ps1` build the example templates, decks and the images above from fictional content; `examples/make_art.py` draws the illustrations.
+The logo is drawn by `docs/logo/build_logo.py` (mark, icons, avatar and social preview). `examples/build_marketing_demo.ps1` and `examples/build_demo.ps1` build the example templates, decks and the images above from fictional content; `examples/make_art.py` draws the illustrations.
 
 ## Contributing
 
