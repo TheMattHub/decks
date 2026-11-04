@@ -105,14 +105,16 @@ def social():
     body = (f'<rect width="1280" height="640" fill="{PAPER}"/>'
             f'<g transform="translate(150 95) scale({k}) translate({-VIEW[0]} {-VIEW[1]})">{mark("light")}</g>'
             + text_path("decks", 640, 330, 150, INK)
-            + text_path("the last version", 646, 400, 44, "#6B6458", "Regular")
-            + text_path("From a short brief to a PowerPoint you can present.", 646, 466, 24, "#6B6458", "Regular"))
+            + text_path("the last version", 646, 400, 44, BANNER["light"]["line"], "Regular")
+            + text_path("From a short brief to a PowerPoint you can present.", 646, 466, 24, BANNER["light"]["body"], "Regular"))
     return svg(body, (1280, 640), (0, 0, 1280, 640))
 
 
-BANNER = {  # panel, title, muted text, the faint outlines of past drafts in the background
-    "light": {"panel": PAPER, "title": INK, "muted": "#6B6458", "ghost": "#D9D1C4"},
-    "dark": {"panel": INK, "title": PAPER, "muted": "#A9A497", "ghost": "#2E3446"},
+BANNER = {  # panel, title, punchline, subtitle, and the faint outlines of past drafts in the background
+    # line: the punchline in the logo's coral, deepened on light and lifted on dark (4.8:1 and 6.0:1);
+    # body: the subtitle in a calm neutral (6.9:1 and 9.5:1).
+    "light": {"panel": PAPER, "title": INK, "line": "#B9432C", "body": "#57524A", "ghost": "#D9D1C4"},
+    "dark": {"panel": INK, "title": PAPER, "line": "#EE7A62", "body": "#C9C4B8", "ghost": "#2E3446"},
 }
 
 
@@ -121,7 +123,7 @@ def banner(theme):
     b = BANNER[theme]
     ghosts = ""
     for x, y, a, s in ((880, 36, -14, 3.0), (1010, 165, 9, 2.6), (1150, -40, -6, 2.3), (985, 300, 5, 2.0)):
-        ghosts += (f'<g transform="translate({x} {y}) rotate({a}) scale({s})"><rect width="80" height="52" rx="6" fill="none" '
+        ghosts += (f'<g transform="translate({x} {y}) rotate({a}) scale({s})"><rect width="80" height="52" rx="6" fill="{b["panel"]}" '
                    f'stroke="{b["ghost"]}" stroke-width="{2.2 / s * 2:.2f}"/>'
                    f'<path d="M10 14h40 M10 22h52 M10 30h34 M10 38h46" stroke="{b["ghost"]}" stroke-width="{2.2 / s * 2:.2f}" stroke-linecap="round"/></g>')
     k = 2.45
@@ -129,8 +131,8 @@ def banner(theme):
             f'<g clip-path="url(#panel)"><rect width="1280" height="360" fill="{b["panel"]}"/>{ghosts}</g>'
             f'<g transform="translate(70 34) scale({k}) translate({-VIEW[0]} {-VIEW[1]})">{mark(theme)}</g>'
             + text_path("decks", 420, 190, 118, b["title"])
-            + text_path("the last version", 425, 248, 36, b["muted"], "Regular")
-            + text_path("From a short brief to a PowerPoint you can present.", 425, 296, 22, b["muted"], "Regular"))
+            + text_path("the last version", 425, 248, 36, b["line"], "Regular")
+            + text_path("From a short brief to a PowerPoint you can present.", 425, 296, 22, b["body"], "Regular"))
     return svg(body, (1280, 360), (0, 0, 1280, 360))
 
 
