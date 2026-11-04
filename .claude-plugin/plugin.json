@@ -1,0 +1,10 @@
+{
+  "name": "decks",
+  "version": "0.2.0",
+  "description": "Make presentations: brief and structure by kind, design in Claude Slides, finish and edit natively in PowerPoint, build on company templates or generate templates from a look.",
+  "author": { "name": "Matteo Brunetti" },
+  "homepage": "https://github.com/TheMattHub/decks",
+  "repository": "https://github.com/TheMattHub/decks",
+  "license": "MIT",
+  "keywords": ["presentation", "slides", "pptx", "powerpoint", "claude design", "template", "agent skill"]
+}

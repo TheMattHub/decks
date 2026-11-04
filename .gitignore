@@ -1,0 +1,7 @@
+# Company templates and decks stay out of this repository (see README, Templates)
+*.pptx
+*.potx
+*.bak-*
+__pycache__/
+.pytest_cache/
+.superpowers/

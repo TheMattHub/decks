@@ -1,0 +1,12 @@
+{
+  "name": "themathub-decks",
+  "description": "Agent skill and PowerPoint tools for making presentations.",
+  "owner": { "name": "Matteo Brunetti" },
+  "plugins": [
+    {
+      "name": "decks",
+      "source": "./",
+      "description": "Make presentations: brief and structure by kind, design in Claude Slides, finish and edit natively in PowerPoint, build on company templates or generate templates from a look."
+    }
+  ]
+}
