@@ -84,8 +84,8 @@ Functions, recipes and gotchas: `references/powerpoint.md`.
 
 Run `Test-DeckLeftovers` and clear every hit (placeholders, TODOs, variant labels, file paths, build
 notes). Render with `Export-SlidePngs` (not LibreOffice), look at every slide, score 1 to 5, fix
-anything under 4, and report the scores and that `ppt/fonts/` holds the fonts. Run `pptx_media.py` for the size (under about
-25 MB) and compress if needed; see "Media and size" in the reference.
+anything under 4, and report the scores and that `ppt/fonts/` holds the fonts. Run `pptx_media.py` for the size and write a copy
+with the `--goal` that fits the brief (`present`, `share` under 25 MB, `email` under 15 MB); see "Media and size" in the reference.
 
 | Dimension | Checks |
 |---|---|

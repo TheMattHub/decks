@@ -4,14 +4,22 @@
 # ///
 """Report and shrink the media inside a .pptx, so a deck stays small enough to mail and share.
 
-    uv run pptx_media.py IN.pptx                 # report only: size per media file, largest first
-    uv run pptx_media.py IN.pptx OUT.pptx        # write a compressed copy; IN is never changed
+    uv run pptx_media.py IN.pptx                       # report only: size per media file, largest first
+    uv run pptx_media.py IN.pptx OUT.pptx              # compressed copy for presenting; IN is never changed
+    uv run pptx_media.py IN.pptx OUT.pptx --goal email # smaller copy to attach to a mail
+
+--goal sets picture size, JPEG quality and video quality for what the deck is for, and the size the
+copy should stay under:
+    present  2560 px, JPEG 85, CRF 24, no limit   full-screen slides stay sharp on a projector or 4K screen
+    share    1920 px, JPEG 80, CRF 28, 25 MB      Teams, OneDrive, a download link; viewed on a laptop
+    email    1280 px, JPEG 75, CRF 30, 15 MB      attachment; mail encoding adds about a third, so 15 MB
+                                                  stays under the 20 MB limit of Outlook and most servers
+--max-px, --jpeg-quality and --crf override the goal's value.
 
 Every part keeps its name and format, so slides, crops, trims and play settings are untouched. A file
-is replaced only when the new version is smaller. Pictures wider or taller than --max-px are scaled
-down (2560 px keeps full-screen slides sharp); JPEGs are re-saved at --jpeg-quality; PNGs are
-re-saved optimised. Videos are re-encoded to H.264 at --crf with the same length, so PowerPoint's
-trims still hold. ffmpeg comes from imageio-ffmpeg, or from PATH.
+is replaced only when the new version is smaller. Pictures wider or taller than the cap are scaled
+down; JPEGs are re-saved at the quality; PNGs are re-saved optimised. Videos are re-encoded to H.264
+with the same length, so PowerPoint's trims still hold. ffmpeg comes from imageio-ffmpeg, or from PATH.
 """
 import argparse
 import io
@@ -27,6 +35,12 @@ from PIL import Image
 
 PICTURES = {".png", ".jpg", ".jpeg"}
 VIDEOS = {".mp4", ".m4v", ".mov"}
+# goal: (max px, JPEG quality, video CRF, size limit in bytes or None); the docstring says why.
+GOALS = {
+    "present": (2560, 85, 24, None),
+    "share": (1920, 80, 28, 25e6),
+    "email": (1280, 75, 30, 15e6),
+}
 
 
 def ffmpeg_exe():
@@ -69,11 +83,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input")
     ap.add_argument("output", nargs="?")
-    ap.add_argument("--max-px", type=int, default=2560)
-    ap.add_argument("--jpeg-quality", type=int, default=85)
-    ap.add_argument("--crf", type=int, default=24, help="video quality: 24 default, 28 for small cards")
+    ap.add_argument("--goal", choices=GOALS, default="present")
+    ap.add_argument("--max-px", type=int)
+    ap.add_argument("--jpeg-quality", type=int)
+    ap.add_argument("--crf", type=int, help="video quality: higher is smaller, 28 for small cards")
     ap.add_argument("--skip-video", action="store_true")
     a = ap.parse_args()
+    max_px, quality, crf, limit = GOALS[a.goal]
+    max_px, quality, crf = a.max_px or max_px, a.jpeg_quality or quality, a.crf or crf
 
     src = Path(a.input).resolve()
     with zipfile.ZipFile(src) as z:
@@ -103,9 +120,9 @@ def main():
                     if item.filename.startswith("ppt/media/"):
                         try:
                             if ext in PICTURES:
-                                new = shrink_picture(data, ext, a.max_px, a.jpeg_quality)
+                                new = shrink_picture(data, ext, max_px, quality)
                             elif ext in VIDEOS and ffmpeg:
-                                new = shrink_video(data, ext, a.crf, ffmpeg)
+                                new = shrink_video(data, ext, crf, ffmpeg)
                         except Exception as e:  # one odd file must not stop the rest
                             print(f"  kept {item.filename[10:]}: {e}")
                     if new is not None and len(new) < len(data):
@@ -118,7 +135,11 @@ def main():
         except BaseException:
             dst.unlink(missing_ok=True)
             raise
-        print(f"{dst.name}: {mb(dst.stat().st_size)} (media {mb(saved)} smaller)")
+        size = dst.stat().st_size
+        print(f"{dst.name}: {mb(size)} (media {mb(saved)} smaller), goal {a.goal}")
+        if limit and size > limit:
+            print(f"still over {limit / 1e6:.0f} MB for {a.goal}: cut or shorten the largest files above, "
+                  "move long films to a link, or try --goal email")
 
 
 if __name__ == "__main__":

@@ -112,18 +112,26 @@ equations. If the XSL is missing or an equation will not convert, an image per e
 
 ## Media and size
 
-Keep a deck under about 25 MB, so it can be mailed and shared in Teams.
+Size the deck for what it is for, and pick the goal from the brief: `present` when it is shown from
+this file, `share` for Teams, OneDrive or a download link, `email` when it goes as an attachment.
 
 ```
-uv run "<skill>/scripts/pptx_media.py" deck.pptx              # report, largest first, files over 5 MB flagged
-uv run "<skill>/scripts/pptx_media.py" deck.pptx small.pptx   # compressed copy
+uv run "<skill>/scripts/pptx_media.py" deck.pptx                            # report, largest first, files over 5 MB flagged
+uv run "<skill>/scripts/pptx_media.py" deck.pptx small.pptx --goal share    # compressed copy for the goal
 ```
+
+| Goal | Pictures | JPEG | Video CRF | Stays under |
+|---|---|---|---|---|
+| `present` (default) | 2560 px | 85 | 24 | no limit |
+| `share` | 1920 px | 80 | 28 | 25 MB |
+| `email` | 1280 px | 75 | 30 | 15 MB (mail encoding adds a third; Outlook stops at 20 MB) |
 
 The copy keeps every part's name and format, so crops, trims and play settings hold. A file is replaced
-only when it gets smaller. Pictures are capped at 2560 px (`--max-px`), JPEGs re-saved at quality 85,
-PNGs optimised, and videos re-encoded to H.264 at CRF 24 (`--crf 28` for small cards) with the same
-length. ffmpeg comes with the script. Already-compressed decks shrink little (24.3 to 23.2 MB on an already lean
-talk deck), so the report is the main use: it shows what to cut.
+only when it gets smaller; PNGs are optimised and videos re-encoded to H.264 with the same length.
+`--max-px`, `--jpeg-quality` and `--crf` override the goal (`--crf 28` for small cards). If the copy is
+still over the goal's size, the script says so: cut or shorten the largest files, or link long films.
+ffmpeg comes with the script. Already-compressed decks shrink little at `present` (24.3 to 23.2 MB on an
+already lean talk deck), so the report is the main use there: it shows what to cut.
 
 - Compress videos before embedding them too: same settings, at their own aspect ratio, with a poster PNG.
 - A video on a small card needs no full resolution: embed a 640 px copy of the same length.

@@ -47,6 +47,15 @@ def test_media_copy_is_smaller_and_keeps_names(tmp_path):
     Presentation(out)  # still a valid deck
 
 
+def test_media_goal_email_caps_pictures(tmp_path):
+    deck = deck_with_big_picture(tmp_path)
+    out = tmp_path / "out.pptx"
+    r = run("pptx_media.py", deck, out, "--skip-video", "--goal", "email")
+    assert r.returncode == 0, r.stderr
+    with zipfile.ZipFile(out) as z, z.open("ppt/media/image1.png") as f:
+        assert max(Image.open(f).size) == 1280
+
+
 def test_media_refuses_to_overwrite_input(tmp_path):
     deck = deck_with_big_picture(tmp_path)
     assert run("pptx_media.py", deck, deck).returncode != 0

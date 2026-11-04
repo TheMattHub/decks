@@ -21,7 +21,7 @@ An agent skill for making presentations, packaged as a Claude Code plugin. It ta
 - **One path, one source**: design in Claude Slides then finish in PowerPoint, or build on a template; once someone edits the .pptx by hand, it is changed in place by scripts and never regenerated.
 - **Templates**: register your company's .pptx/.potx, see its layouts as a picture, fill its placeholders, reuse its designed slides as a library, or generate a new template from colours and fonts.
 - **Editable slides**: tables, cards and steps as native elements, equations as native PowerPoint math from LaTeX, charts as images regenerated from data.
-- **Review and size**: a leftover check (placeholders, TODOs, file paths), slide renders scored on content, design and coherence, and a media report with a compressed copy.
+- **Review and size**: a leftover check (placeholders, TODOs, file paths), slide renders scored on content, design and coherence, and a media report with a compressed copy sized for the goal: full quality to present, under 25 MB to share, under 15 MB to email.
 
 ## Example decks
 
@@ -90,7 +90,7 @@ Ask for a presentation, a shorter version of one, or changes to a deck. The skil
 | `references/claude-slides.md` | Working with a Claude Slides deck, and what its PowerPoint export keeps |
 | `references/powerpoint.md` | Finishing and in-place editing with PowerPoint, equations, media size, gotchas |
 | `scripts/PptxCom.ps1` | PowerShell helpers for PowerPoint COM: find by text, videos, transitions, build-ins, fonts, renders, dumps, leftover check, layout sheet, templates, slide library |
-| `scripts/pptx_media.py` | Media report and a compressed copy of a .pptx |
+| `scripts/pptx_media.py` | Media report and a compressed copy of a .pptx, sized for presenting, sharing or email |
 | `scripts/pptx_equations.py` | `$$latex$$` paragraphs in a .pptx to native, editable equations |
 
 The logo is drawn by `docs/logo/build_logo.py` (mark, icons, avatar and social preview). `examples/build_marketing_demo.ps1` and `examples/build_demo.ps1` build the example templates, decks and the images above from fictional content; `examples/make_art.py` draws the illustrations.
