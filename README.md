@@ -1,13 +1,7 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/decks-mark-dark.svg">
-    <img src="docs/logo/decks-mark-light.svg" alt="decks logo: three slides fanned out, the drafts v6 and final_v7 underneath and the last version on top with a tick" width="150">
-  </picture>
-</p>
-
-<h1 align="center">decks</h1>
-
-<p align="center"><i>the last version</i></p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/decks-banner-dark.svg">
+  <img src="docs/logo/decks-banner-light.svg" alt="decks, the last version: three slides fanned out, the drafts v6 and final_v7 underneath and the last version on top with a tick. From a short brief to a PowerPoint you can present." width="100%">
+</picture>
 
 <p align="center">
   <a href="https://github.com/TheMattHub/decks/actions/workflows/tests.yml"><img src="https://github.com/TheMattHub/decks/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>

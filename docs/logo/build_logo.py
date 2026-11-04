@@ -8,7 +8,8 @@ underneath and the last version on top with a tick.
     uv run docs/logo/build_logo.py            # writes the SVGs and PNGs next to this script
 
 Writes the mark (light and dark), icons (512 to 16 px; 16 px keeps two slides), an avatar on the
-paper background and the 1280 x 640 social preview. Text is converted to outlines with IBM Plex
+paper background (also the plugin listing icon, .claude-plugin/icon.png), the README banners and the
+1280 x 640 social preview. Text is converted to outlines with IBM Plex
 Sans (SIL Open Font License), so the files look the same everywhere. PNGs are rendered with
 Microsoft Edge or Google Chrome in headless mode.
 """
@@ -109,6 +110,30 @@ def social():
     return svg(body, (1280, 640), (0, 0, 1280, 640))
 
 
+BANNER = {  # panel, title, muted text, the faint outlines of past drafts in the background
+    "light": {"panel": PAPER, "title": INK, "muted": "#6B6458", "ghost": "#D9D1C4"},
+    "dark": {"panel": INK, "title": PAPER, "muted": "#A9A497", "ghost": "#2E3446"},
+}
+
+
+def banner(theme):
+    """1280 x 360 README banner: the mark, the name and the line, with faint discarded drafts behind."""
+    b = BANNER[theme]
+    ghosts = ""
+    for x, y, a, s in ((880, 36, -14, 3.0), (1010, 165, 9, 2.6), (1150, -40, -6, 2.3), (985, 300, 5, 2.0)):
+        ghosts += (f'<g transform="translate({x} {y}) rotate({a}) scale({s})"><rect width="80" height="52" rx="6" fill="none" '
+                   f'stroke="{b["ghost"]}" stroke-width="{2.2 / s * 2:.2f}"/>'
+                   f'<path d="M10 14h40 M10 22h52 M10 30h34 M10 38h46" stroke="{b["ghost"]}" stroke-width="{2.2 / s * 2:.2f}" stroke-linecap="round"/></g>')
+    k = 2.45
+    body = (f'<defs><clipPath id="panel"><rect width="1280" height="360" rx="28"/></clipPath></defs>'
+            f'<g clip-path="url(#panel)"><rect width="1280" height="360" fill="{b["panel"]}"/>{ghosts}</g>'
+            f'<g transform="translate(70 34) scale({k}) translate({-VIEW[0]} {-VIEW[1]})">{mark(theme)}</g>'
+            + text_path("decks", 420, 190, 118, b["title"])
+            + text_path("the last version", 425, 248, 36, b["muted"], "Regular")
+            + text_path("From a short brief to a PowerPoint you can present.", 425, 296, 22, b["muted"], "Regular"))
+    return svg(body, (1280, 360), (0, 0, 1280, 360))
+
+
 def browser():
     for c in ("msedge", "chrome", "google-chrome", "chromium"):
         if shutil.which(c):
@@ -142,6 +167,12 @@ def main():
     pad = 14  # avatar: the mark on paper, with a margin
     view = (VIEW[0] - pad, VIEW[1] - pad, VIEW[2] + 2 * pad, VIEW[3] + 2 * pad)
     png(svg(mark("light"), (512, 512), view, PAPER), HERE / "decks-avatar-512.png", 512, 512)
+    # The plugin directory's listing icon: a square PNG at .claude-plugin/icon.png (512-2048 px, no SVG).
+    png(svg(mark("light"), (512, 512), view, PAPER), HERE.parents[1] / ".claude-plugin" / "icon.png", 512, 512)
+    for theme in BANNER:
+        b = banner(theme)
+        (HERE / f"decks-banner-{theme}.svg").write_text(b, encoding="utf-8")
+        png(b, HERE / f"decks-banner-{theme}.png", 1280, 360)
     s = social()
     (HERE / "decks-social-preview.svg").write_text(s, encoding="utf-8")
     png(s, HERE / "decks-social-preview.png", 1280, 640)
