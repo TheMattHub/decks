@@ -114,7 +114,7 @@ BANNER = {  # panel, title, punchline, subtitle, and the faint outlines of past 
     # line: the punchline in the logo's coral, deepened on light and lifted on dark (4.8:1 and 6.0:1);
     # body: the subtitle in a calm neutral (6.9:1 and 9.5:1).
     "light": {"panel": PAPER, "title": INK, "line": "#B9432C", "body": "#57524A", "ghost": "#D9D1C4"},
-    "dark": {"panel": INK, "title": PAPER, "line": "#EE7A62", "body": "#C9C4B8", "ghost": "#2E3446"},
+    "dark": {"panel": "#24201E", "title": PAPER, "line": "#EE7A62", "body": "#C9C4B8", "ghost": "#38322E"},  # warm charcoal, the paper's family
 }
 
 
@@ -153,9 +153,11 @@ def png(svg_text, out, w, h):
     with tempfile.TemporaryDirectory() as tmp:
         page = Path(tmp) / "page.html"
         page.write_text(f'<html><body style="margin:0;background:transparent">{svg_text}</body></html>', encoding="utf-8")
-        subprocess.run([browser(), "--headless=new", "--disable-gpu", "--hide-scrollbars",
+        # A throwaway profile: with the default one, an already-open browser can take over the call and hang it.
+        subprocess.run([browser(), "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+                        f"--user-data-dir={Path(tmp) / 'profile'}",
                         "--default-background-color=00000000", f"--window-size={w},{h}",
-                        f"--screenshot={out}", page.as_uri()], check=True, capture_output=True)
+                        f"--screenshot={out}", page.as_uri()], check=True, capture_output=True, timeout=60)
 
 
 def main():
