@@ -1,5 +1,7 @@
 # decks
 
+[![Tests](https://github.com/TheMattHub/decks/actions/workflows/tests.yml/badge.svg)](https://github.com/TheMattHub/decks/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-SKILL.md-orange)](https://agentskills.io)
+
 An agent skill for making presentations, packaged as a Claude Code plugin. It takes a deck from a short brief to the file you present: a structure chosen by the kind of talk (consultancy, research, marketing, internal), the story and look drafted in Claude Slides or on your company template, and a native PowerPoint file finished and edited with PowerPoint itself, so videos, transitions, build-ins, fonts and equations stay real and editable.
 
 [![A four-slide demo deck built by the plugin: a cover, a row of big-number cards, a slide with a native PowerPoint equation, and a dark section divider](docs/screenshots/demo-deck.png)](docs/screenshots/demo-deck.png)
@@ -76,7 +78,7 @@ Ask for a presentation, a shorter version of one, or changes to a deck. The skil
 
 ## Contributing
 
-Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Questions and ideas go to [Discussions](https://github.com/TheMattHub/decks/discussions); bugs to issues. Read [CONTRIBUTING.md](CONTRIBUTING.md) before a pull request: it says what fits this plugin and what belongs in your fork.
 
 ## License
 

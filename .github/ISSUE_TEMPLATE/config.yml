@@ -1,0 +1,10 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or idea
+    url: https://github.com/TheMattHub/decks/discussions
+    about: Ask how to do something, or float an idea before building it.
+  - name: Working with a company template or client deck? Read this first
+    url: https://github.com/TheMattHub/decks/blob/main/CONTRIBUTING.md#what-gets-declined
+    about: >-
+      This tracker is public. Never attach a company template, brand file or client deck;
+      describe the problem or reproduce it on a fictional deck.
