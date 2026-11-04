@@ -34,6 +34,8 @@ Write `slides/BRIEF.md`, one screen:
 
 Then show the user the outline (one line per main slide: title as a sentence, start time) and the
 backup list, with assumptions in one line, and wait for a yes unless they said to go ahead.
+For a new deck, when the kind allows two shapes (story-led or data-led, a presented talk or a short
+read-alone version), show both outlines side by side, one recommended, and let the user pick.
 
 ## 2. Choose the path
 
@@ -52,6 +54,11 @@ nothing, so a required template is used from the start.
 Claude Code reads and writes Slides decks directly; mechanics, export and gotchas in
 `references/claude-slides.md`.
 
+- A new deck with no template: before the full deck, offer three look directions that differ in
+  kind (e.g. sober corporate, warm and image-led, bold and data-led). Each is a palette, a font pair,
+  the cover and one content slide from the outline, shown side by side with one recommended. The user
+  picks or mixes; skip this when they said to just pick. Offer to keep the chosen look as a template
+  (5) so later decks reuse it.
 - Write the slides from the brief, the numbers file and the figure scripts, as native elements (see
   "Editable slides").
 - Asked for mockups or options: make them; at most two per slide, side by side, one recommended;

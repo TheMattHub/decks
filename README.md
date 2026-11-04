@@ -19,7 +19,7 @@ An agent skill for making presentations, packaged as a Claude Code plugin. It ta
 
 - **Brief and outline first**: audience, the three messages, a slide budget (about one main slide per minute, the rest in a backup section), and an outline you approve before any slide is built.
 - **One path, one source**: design in Claude Slides then finish in PowerPoint, or build on a template; once someone edits the .pptx by hand, it is changed in place by scripts and never regenerated.
-- **Templates**: register your company's .pptx/.potx, see its layouts as a picture, fill its placeholders, reuse its designed slides as a library, or generate a new template from colours and fonts.
+- **Templates**: register your company's .pptx/.potx, see its layouts as a picture, fill its placeholders, reuse its designed slides as a library, or generate a new template from colours and fonts. A new deck starts from three look directions to pick from.
 - **Editable slides**: tables, cards and steps as native elements, equations as native PowerPoint math from LaTeX, charts as images regenerated from data.
 - **Review and size**: a leftover check (placeholders, TODOs, file paths), slide renders scored on content, design and coherence, and a media report with a compressed copy sized for the goal: full quality to present, under 25 MB to share, under 15 MB to email.
 
