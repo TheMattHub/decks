@@ -8,13 +8,14 @@
     uv run pptx_media.py IN.pptx OUT.pptx              # compressed copy for presenting; IN is never changed
     uv run pptx_media.py IN.pptx OUT.pptx --goal email # smaller copy to attach to a mail
 
---goal sets picture size, JPEG quality and video quality for what the deck is for, and the size the
-copy should stay under:
-    present  2560 px, JPEG 85, CRF 24, no limit   full-screen slides stay sharp on a projector or 4K screen
-    share    1920 px, JPEG 80, CRF 28, 25 MB      Teams, OneDrive, a download link; viewed on a laptop
-    email    1280 px, JPEG 75, CRF 30, 15 MB      attachment; mail encoding adds about a third, so 15 MB
-                                                  stays under the 20 MB limit of Outlook and most servers
---max-px, --jpeg-quality and --crf override the goal's value.
+--goal sets picture size, video size, JPEG quality and video quality for what the deck is for, and the
+size the copy should stay under:
+    present  2560 px, video 1920, JPEG 85, CRF 24, no limit   full-screen slides stay sharp on a projector or 4K
+    share    1920 px, video 1280, JPEG 80, CRF 28, 25 MB      Teams, OneDrive, a download link; viewed on a laptop
+    email    1280 px, video  960, JPEG 75, CRF 30, 15 MB      attachment; mail encoding adds about a third, so 15 MB
+                                                              stays under the 20 MB limit of Outlook and most servers
+--max-px, --max-video-px, --jpeg-quality and --crf override the goal's value. The pixel caps apply to the
+longest side and never upscale; the colour profile of a re-saved picture is kept.
 
 Every part keeps its name and format, so slides, crops, trims and play settings are untouched. A file
 is replaced only when the new version is smaller. Pictures wider or taller than the cap are scaled
@@ -24,6 +25,7 @@ with the same length, so PowerPoint's trims still hold. ffmpeg comes from imagei
 import argparse
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,11 +37,11 @@ from PIL import Image
 
 PICTURES = {".png", ".jpg", ".jpeg"}
 VIDEOS = {".mp4", ".m4v", ".mov"}
-# goal: (max px, JPEG quality, video CRF, size limit in bytes or None); the docstring says why.
+# goal: (max picture px, max video px, JPEG quality, video CRF, size limit in bytes or None); the docstring says why.
 GOALS = {
-    "present": (2560, 85, 24, None),
-    "share": (1920, 80, 28, 25e6),
-    "email": (1280, 75, 30, 15e6),
+    "present": (2560, 1920, 85, 24, None),
+    "share": (1920, 1280, 80, 28, 25e6),
+    "email": (1280, 960, 75, 30, 15e6),
 }
 
 
@@ -53,22 +55,37 @@ def ffmpeg_exe():
 
 def shrink_picture(data, ext, max_px, quality):
     img = Image.open(io.BytesIO(data))
+    # Without the profile a wide-gamut photo shifts colour; resize() and convert() drop it, so take it first.
+    icc = img.info.get("icc_profile")
     if max(img.size) > max_px:
         k = max_px / max(img.size)
         img = img.resize((round(img.width * k), round(img.height * k)), Image.LANCZOS)
     out = io.BytesIO()
     if ext == ".png":
-        img.save(out, "PNG", optimize=True)
+        img.save(out, "PNG", optimize=True, icc_profile=icc)
     else:
-        img.convert("RGB").save(out, "JPEG", quality=quality, optimize=True, progressive=True)
+        img.convert("RGB").save(out, "JPEG", quality=quality, optimize=True, progressive=True, icc_profile=icc)
     return out.getvalue()
 
 
-def shrink_video(data, ext, crf, ffmpeg):
+def video_size(ffmpeg, src):
+    """Width and height from ffmpeg's stream listing (no ffprobe ships with imageio-ffmpeg)."""
+    info = subprocess.run([ffmpeg, "-i", str(src)], capture_output=True, text=True).stderr
+    m = re.search(r"Video:.*?, (\d{2,5})x(\d{2,5})", info)
+    return (int(m[1]), int(m[2])) if m else None
+
+
+def shrink_video(data, ext, crf, ffmpeg, max_px):
     with tempfile.TemporaryDirectory() as tmp:
         src, dst = Path(tmp) / ("in" + ext), Path(tmp) / ("out" + ext)
         src.write_bytes(data)
-        cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", str(src), "-c:v", "libx264", "-crf", str(crf),
+        scale = []
+        size = video_size(ffmpeg, src)
+        if size and max(size) > max_px:
+            k = max_px / max(size)
+            # libx264 with yuv420p needs even dimensions
+            scale = ["-vf", "scale=" + ":".join(str(max(2, round(d * k / 2) * 2)) for d in size)]
+        cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", str(src), *scale, "-c:v", "libx264", "-crf", str(crf),
                "-preset", "slow", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
                "-movflags", "+faststart", str(dst)]
         subprocess.run(cmd, check=True)
@@ -85,12 +102,14 @@ def main():
     ap.add_argument("output", nargs="?")
     ap.add_argument("--goal", choices=GOALS, default="present")
     ap.add_argument("--max-px", type=int)
+    ap.add_argument("--max-video-px", type=int)
     ap.add_argument("--jpeg-quality", type=int)
     ap.add_argument("--crf", type=int, help="video quality: higher is smaller, 28 for small cards")
     ap.add_argument("--skip-video", action="store_true")
     a = ap.parse_args()
-    max_px, quality, crf, limit = GOALS[a.goal]
-    max_px, quality, crf = a.max_px or max_px, a.jpeg_quality or quality, a.crf or crf
+    max_px, video_px, quality, crf, limit = GOALS[a.goal]
+    max_px, video_px = a.max_px or max_px, a.max_video_px or video_px
+    quality, crf = a.jpeg_quality or quality, a.crf or crf
 
     src = Path(a.input).resolve()
     with zipfile.ZipFile(src) as z:
@@ -122,7 +141,7 @@ def main():
                             if ext in PICTURES:
                                 new = shrink_picture(data, ext, max_px, quality)
                             elif ext in VIDEOS and ffmpeg:
-                                new = shrink_video(data, ext, crf, ffmpeg)
+                                new = shrink_video(data, ext, crf, ffmpeg, video_px)
                         except Exception as e:  # one odd file must not stop the rest
                             print(f"  kept {item.filename[10:]}: {e}")
                     if new is not None and len(new) < len(data):
@@ -140,6 +159,7 @@ def main():
         if limit and size > limit:
             print(f"still over {limit / 1e6:.0f} MB for {a.goal}: cut or shorten the largest files above, "
                   "move long films to a link, or try --goal email")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

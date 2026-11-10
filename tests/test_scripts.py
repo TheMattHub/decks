@@ -1,11 +1,13 @@
 """Tests for the Python scripts, on decks built here from fictional content (python-pptx)."""
+import re
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
 import pytest
-from PIL import Image
+import imageio_ffmpeg
+from PIL import Image, ImageCms
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
@@ -59,6 +61,55 @@ def test_media_goal_email_caps_pictures(tmp_path):
 def test_media_refuses_to_overwrite_input(tmp_path):
     deck = deck_with_big_picture(tmp_path)
     assert run("pptx_media.py", deck, deck).returncode != 0
+
+
+def make_video(path, w, h):
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    f"testsrc=size={w}x{h}:rate=10:duration=1", "-pix_fmt", "yuv420p", str(path)], check=True)
+
+
+def video_size(path):
+    info = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-i", str(path)], capture_output=True, text=True).stderr
+    return tuple(map(int, re.search(r"Video:.*?, (\d+)x(\d+)", info).groups()))
+
+
+def test_media_video_is_capped_per_goal(tmp_path):
+    video = tmp_path / "v.mp4"
+    make_video(video, 1280, 720)
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_movie(str(video), 0, 0, prs.slide_width, prs.slide_height, mime_type="video/mp4")
+    deck, out = tmp_path / "in.pptx", tmp_path / "out.pptx"
+    prs.save(deck)
+    r = run("pptx_media.py", deck, out, "--goal", "email")
+    assert r.returncode == 0, r.stderr
+    with zipfile.ZipFile(out) as z:
+        names = [n for n in z.namelist() if n.endswith(".mp4")]
+        z.extract(names[0], tmp_path)
+    assert video_size(tmp_path / names[0]) == (960, 540)
+
+
+def test_media_exit_code_one_when_copy_is_over_the_limit(tmp_path):
+    deck = deck_with_big_picture(tmp_path)  # noise: the 4000 px PNG stays over 15 MB
+    out = tmp_path / "out.pptx"
+    r = run("pptx_media.py", deck, out, "--skip-video", "--goal", "email", "--max-px", 4000)
+    assert out.exists() and r.returncode == 1 and "still over" in r.stdout
+
+
+def test_media_keeps_icc_profile(tmp_path):
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    for name in ("p.png", "p.jpg"):
+        Image.effect_noise((400, 300), 40).convert("RGB").save(tmp_path / name, icc_profile=icc)
+        slide.shapes.add_picture(str(tmp_path / name), 0, 0, width=prs.slide_width // 4)
+    deck, out = tmp_path / "in.pptx", tmp_path / "out.pptx"
+    prs.save(deck)
+    assert run("pptx_media.py", deck, out, "--skip-video", "--max-px", 200).returncode == 0
+    with zipfile.ZipFile(out) as z:
+        for part in ("ppt/media/image1.png", "ppt/media/image2.jpg"):
+            with z.open(part) as f:
+                assert Image.open(f).info.get("icc_profile") == icc, part
 
 
 @pytest.mark.skipif(not XSL.exists(), reason="needs Microsoft Office's MML2OMML.XSL")
