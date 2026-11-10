@@ -17,6 +17,12 @@ size the copy should stay under:
 --max-px, --max-video-px, --jpeg-quality and --crf override the goal's value. The pixel caps apply to the
 longest side and never upscale; the colour profile of a re-saved picture is kept.
 
+A picture or video needs only the pixels it is shown at: by default each file is also scaled to what its
+slides display, measured as if the cap were the pixel count across the slide's longer side, with crops
+(the stored file must still cover the uncropped image), groups and shared files taken into account, and
+never upscaled. A file used where the size is unknown (layout, master, background, fill) keeps the plain
+cap. --no-footprint turns this off.
+
 Every part keeps its name and format, so slides, crops, trims and play settings are untouched. A file
 is replaced only when the new version is smaller. Pictures wider or taller than the cap are scaled
 down; JPEGs are re-saved at the quality; PNGs are re-saved optimised. Videos are re-encoded to H.264
@@ -30,7 +36,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
+from posixpath import dirname, join, normpath
 from pathlib import Path
 
 from PIL import Image
@@ -53,13 +61,91 @@ def ffmpeg_exe():
         return shutil.which("ffmpeg")
 
 
-def shrink_picture(data, ext, max_px, quality):
+NS = {"p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+      "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+      "p14": "http://schemas.microsoft.com/office/powerpoint/2010/main",
+      "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+      "rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+R = "{%s}" % NS["r"]
+
+
+def media_targets(z, rels_name):
+    """rId -> media part name, for the relationships of one part that point into ppt/media."""
+    base = dirname(dirname(rels_name))  # the rels file sits in <part folder>/_rels/
+    found = {}
+    for rel in ET.fromstring(z.read(rels_name)).iter("{%s}Relationship" % NS["rel"]):
+        if rel.get("TargetMode") == "External":
+            continue
+        t = rel.get("Target")
+        t = t.lstrip("/") if t.startswith("/") else normpath(join(base, t))
+        if t.startswith("ppt/media/"):
+            found[rel.get("Id")] = t
+    return found
+
+
+def footprints(z):
+    """media part -> (w, h): the most any slide shows it at, as fractions of the slide's longer side and
+    of the uncropped image. A part missing from the result is used somewhere its size is unknown."""
+    sld = ET.fromstring(z.read("ppt/presentation.xml")).find("p:sldSz", NS)
+    longer = max(int(sld.get("cx")), int(sld.get("cy")))
+    need, plain, accounted = {}, set(), set()
+
+    def walk(el, sx, sy, slide, rids):
+        for c in el:
+            if c.tag == "{%s}pic" % NS["p"]:
+                x, srcrect = c.find("p:spPr/a:xfrm", NS), c.find("p:blipFill/a:srcRect", NS)
+                ext = x.find("a:ext", NS) if x is not None else None
+                if ext is None or not int(ext.get("cx")) or not int(ext.get("cy")):
+                    continue  # no own geometry (a placeholder): its media stay unaccounted, so plain
+                w, h = int(ext.get("cx")) * sx, int(ext.get("cy")) * sy
+                if 45 < int(x.get("rot", 0)) / 60000 % 180 < 135:
+                    w, h = h, w  # turned a quarter: the image's width runs along the slide's height
+                crop = {k: int(srcrect.get(k, 0)) / 100000 if srcrect is not None else 0 for k in "ltrb"}
+                kw, kh = 1 - crop["l"] - crop["r"], 1 - crop["t"] - crop["b"]
+                if kw <= 0 or kh <= 0:
+                    continue
+                refs = [e.get(R + "embed") for e in c.iterfind(".//a:blip", NS)]
+                refs += [e.get(R + "link") for e in c.iterfind(".//a:videoFile", NS)]
+                refs += [e.get(R + k) for e in c.iterfind(".//p14:media", NS) for k in ("embed", "link")]
+                for rid in filter(None, refs):
+                    if rid in rids:
+                        old = need.get(rids[rid], (0, 0))
+                        need[rids[rid]] = (max(old[0], w / longer / kw), max(old[1], h / longer / kh))
+                        accounted.add((slide, rid))
+                continue
+            g = c.find("p:grpSpPr/a:xfrm", NS) if c.tag == "{%s}grpSp" % NS["p"] else None
+            if g is not None and int(g.find("a:chExt", NS).get("cx")) and int(g.find("a:chExt", NS).get("cy")):
+                e, ce = g.find("a:ext", NS), g.find("a:chExt", NS)
+                walk(c, sx * int(e.get("cx")) / int(ce.get("cx")), sy * int(e.get("cy")) / int(ce.get("cy")),
+                     slide, rids)
+            else:
+                walk(c, sx, sy, slide, rids)
+
+    for name in z.namelist():
+        if not name.endswith(".rels"):
+            continue
+        if re.fullmatch(r"ppt/slides/_rels/slide\d+\.xml\.rels", name):
+            rids = media_targets(z, name)
+            walk(ET.fromstring(z.read("ppt/slides/" + name.rsplit("/", 1)[1][:-5])), 1, 1, name, rids)
+            plain.update(t for rid, t in rids.items() if (name, rid) not in accounted)
+        else:
+            plain.update(media_targets(z, name).values())
+    return {k: v for k, v in need.items() if k not in plain}
+
+
+def scale_factor(w, h, cap, foot):
+    """Never up, never past the cap; with a footprint, only as large as the slide shows it."""
+    k = min(1, cap / max(w, h))
+    return min(k, max(foot[0] * cap / w, foot[1] * cap / h)) if foot else k
+
+
+def shrink_picture(data, ext, max_px, quality, foot=None):
     img = Image.open(io.BytesIO(data))
     # Without the profile a wide-gamut photo shifts colour; resize() and convert() drop it, so take it first.
     icc = img.info.get("icc_profile")
-    if max(img.size) > max_px:
-        k = max_px / max(img.size)
-        img = img.resize((round(img.width * k), round(img.height * k)), Image.LANCZOS)
+    k = scale_factor(*img.size, max_px, foot)
+    if k < 1:
+        img = img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))), Image.LANCZOS)
     out = io.BytesIO()
     if ext == ".png":
         img.save(out, "PNG", optimize=True, icc_profile=icc)
@@ -75,14 +161,14 @@ def video_size(ffmpeg, src):
     return (int(m[1]), int(m[2])) if m else None
 
 
-def shrink_video(data, ext, crf, ffmpeg, max_px):
+def shrink_video(data, ext, crf, ffmpeg, max_px, foot=None):
     with tempfile.TemporaryDirectory() as tmp:
         src, dst = Path(tmp) / ("in" + ext), Path(tmp) / ("out" + ext)
         src.write_bytes(data)
         scale = []
         size = video_size(ffmpeg, src)
-        if size and max(size) > max_px:
-            k = max_px / max(size)
+        k = scale_factor(*size, max_px, foot) if size else 1
+        if k < 1:
             # libx264 with yuv420p needs even dimensions
             scale = ["-vf", "scale=" + ":".join(str(max(2, round(d * k / 2) * 2)) for d in size)]
         cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", str(src), *scale, "-c:v", "libx264", "-crf", str(crf),
@@ -105,6 +191,7 @@ def main():
     ap.add_argument("--max-video-px", type=int)
     ap.add_argument("--jpeg-quality", type=int)
     ap.add_argument("--crf", type=int, help="video quality: higher is smaller, 28 for small cards")
+    ap.add_argument("--no-footprint", action="store_true", help="cap by pixels only, not by displayed size")
     ap.add_argument("--skip-video", action="store_true")
     a = ap.parse_args()
     max_px, video_px, quality, crf, limit = GOALS[a.goal]
@@ -129,6 +216,7 @@ def main():
         ffmpeg = None if a.skip_video else ffmpeg_exe()
         if not a.skip_video and not ffmpeg:
             print("no ffmpeg found: videos are left as they are")
+        feet = {} if a.no_footprint else footprints(z)
         saved = 0
         try:
             with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as out:
@@ -139,9 +227,9 @@ def main():
                     if item.filename.startswith("ppt/media/"):
                         try:
                             if ext in PICTURES:
-                                new = shrink_picture(data, ext, max_px, quality)
+                                new = shrink_picture(data, ext, max_px, quality, feet.get(item.filename))
                             elif ext in VIDEOS and ffmpeg:
-                                new = shrink_video(data, ext, crf, ffmpeg, video_px)
+                                new = shrink_video(data, ext, crf, ffmpeg, video_px, feet.get(item.filename))
                         except Exception as e:  # one odd file must not stop the rest
                             print(f"  kept {item.filename[10:]}: {e}")
                     if new is not None and len(new) < len(data):

@@ -126,3 +126,104 @@ def test_equations_become_native(tmp_path):
     with zipfile.ZipFile(out) as z:
         xml = z.read("ppt/slides/slide1.xml").decode("utf-8")
     assert "a14:m" in xml and "oMath" in xml
+
+
+# --- pptx_media footprint sizing: a 16:9 deck, goal share (picture cap 1920 px across the longer side) ---
+QUARTER = 3048000  # EMU: a quarter of the slide width
+
+
+def footprint_deck(tmp_path, size=(4000, 2250)):
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = 12192000, 6858000
+    img = tmp_path / "pic.png"
+    Image.new("RGB", size, (200, 80, 40)).save(img)
+    return prs, str(img)
+
+
+def save(prs, tmp_path):
+    deck = tmp_path / "in.pptx"
+    prs.save(deck)
+    return deck
+
+
+def media_size(prs, tmp_path, *args):
+    deck, out = save(prs, tmp_path), tmp_path / "out.pptx"
+    r = run("pptx_media.py", deck, out, "--skip-video", "--goal", "share", *args)
+    assert r.returncode == 0, r.stderr
+    with zipfile.ZipFile(out) as z, z.open("ppt/media/image1.png") as f:
+        return Image.open(f).size
+
+
+def near(size, expected):
+    return all(abs(a - b) <= 1 for a, b in zip(size, expected))
+
+
+def test_footprint_full_width(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=prs.slide_width)
+    assert near(media_size(prs, tmp_path), (1920, 1080))
+
+
+def test_footprint_quarter_width(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=QUARTER)
+    assert near(media_size(prs, tmp_path), (480, 270))
+
+
+def test_footprint_crop_needs_more_pixels(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    pic = prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=QUARTER)
+    pic.crop_left = pic.crop_right = 0.25
+    assert near(media_size(prs, tmp_path), (960, 540))
+
+
+def test_footprint_shared_file_takes_the_largest_need(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=QUARTER)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=2 * QUARTER)
+    assert near(media_size(prs, tmp_path), (960, 540))
+
+
+def test_footprint_group_scale(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    group = prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_group_shape()
+    group.shapes.add_picture(img, 0, 0, width=QUARTER)
+    xfrm = group._element.grpSpPr.xfrm  # drawn twice as large as its children's own space
+    xfrm.ext.cx, xfrm.ext.cy = 2 * xfrm.chExt.cx, 2 * xfrm.chExt.cy
+    assert near(media_size(prs, tmp_path), (960, 540))
+
+
+def test_footprint_small_picture_unchanged(tmp_path):
+    prs, img = footprint_deck(tmp_path, (300, 169))
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=QUARTER)
+    assert media_size(prs, tmp_path) == (300, 169)
+
+
+def test_footprint_off_keeps_the_plain_cap(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=QUARTER)
+    assert near(media_size(prs, tmp_path, "--no-footprint"), (1920, 1080))
+
+
+def test_footprint_video(tmp_path):
+    video = tmp_path / "v.mp4"
+    make_video(video, 1280, 720)
+    prs, _ = footprint_deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_movie(
+        str(video), 0, 0, QUARTER, QUARTER * 9 // 16, mime_type="video/mp4")
+    deck, out = save(prs, tmp_path), tmp_path / "out.pptx"
+    assert run("pptx_media.py", deck, out, "--goal", "share").returncode == 0
+    with zipfile.ZipFile(out) as z:
+        name = next(n for n in z.namelist() if n.endswith(".mp4"))
+        z.extract(name, tmp_path)
+    assert near(video_size(tmp_path / name), (320, 180))
+
+
+def test_footprint_media_also_on_a_layout_keeps_the_plain_cap(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    pic = slide.shapes.add_picture(img, 0, 0, width=QUARTER)
+    # the same media on the layout too: its size there is unknown
+    slide.slide_layout.part.relate_to(slide.part.related_part(pic._element.blip_rId),
+                                      "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image")
+    assert near(media_size(prs, tmp_path), (1920, 1080))
