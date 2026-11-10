@@ -9,8 +9,8 @@ deck's own files into a manifest, which Invoke-FinishManifest applies to the exp
     uv run slides_manifest.py DECK_DIR OUT.json     # manifest written to OUT.json
 
 DECK_DIR holds the deck's files as fetched: project/deck.json and project/slides/<id>.html. The slides are
-taken in deck.json's "order". A slide file that "order" leaves out is appended last (the deck shows it last)
-and reported on stderr. Exit 1 with one line on stderr when the structure is not recognised: no deck.json, no
+taken in deck.json's "order". A slide file that "order" leaves out is not in the manifest (the export does not
+have it either); it is reported on stderr. Exit 1 with one line on stderr when the structure is not recognised: no deck.json, no
 "order" list, a listed slide file missing, a slide file with no <section>. A transition or build name other
 than fade|push|magic / rise|fade|pop is kept verbatim and warned about on stderr.
 
@@ -42,7 +42,18 @@ Manifest (flat; every key is always present):
 
 A video's box needs width and height in its inline style, and a position: left and top, or right and bottom
 (then x = canvas_width - right - w). Without them the box is null: the video sits in the layout flow and the
-file does not say where. Speaker notes (the <aside>) never reach titles or build texts.
+file does not say where. Speaker notes (the <aside>) and <style>/<script> text never reach titles or build texts. A <section> nested
+in the slide's own section is an ordinary element.
+
+How the applier must match (Invoke-FinishManifest):
+  - Slides are placed by "index"; "title" is only a check. It may be empty or repeated across slides.
+  - Titles and build texts are whitespace-collapsed (runs of spaces, tabs and newlines become one space,
+    ends trimmed): collapse the deck's text the same way before comparing.
+  - A build "text" is a prefix of the element's text, at most 60 characters. Compare it literally (starts-with
+    or substring), never as a regular expression.
+  - A build with "text" "" has no text (an image or a bare shape): it cannot be found by text.
+  - A video "src" names the file by its last path segment ("/_blob/ab12" -> ab12): look that up in the media
+    folder.
 """
 import json
 import re
@@ -54,6 +65,7 @@ TRANSITIONS = {"fade", "push", "magic"}
 BUILDS = {"rise", "fade", "pop"}
 VOID = {"br", "img", "hr", "source", "input", "meta", "link", "col", "wbr"}
 INLINE = {"b", "i", "u", "a", "span"}
+MUTED = {"aside", "style", "script"}
 HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 SLIDE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 TEXT_MAX = 60
@@ -83,7 +95,8 @@ class SlideParser(HTMLParser):
         self.stack = []           # open elements: [tag, parts]
         self.in_section = False
         self.section_done = False
-        self.aside_depth = 0
+        self.section_depth = 0    # a <section> inside the slide's own is an ordinary element
+        self.muted = 0            # inside <aside>, <style> or <script>: text is not slide text
         self.builds = []          # [effect, text parts]
         self.videos = []          # {"src","poster","style"}
         self.headings = []
@@ -93,12 +106,14 @@ class SlideParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "section" and not self.section_done and not self.in_section:
-            self.section, self.in_section = a, True
+            self.section, self.in_section, self.section_depth = a, True, 1
             return
         if not self.in_section:
             return
-        if tag == "aside":
-            self.aside_depth += 1
+        if tag == "section":
+            self.section_depth += 1
+        if tag in MUTED:
+            self.muted += 1
         if tag == "br":
             self.add_text(" ")
         if tag == "source" and self.open_video is not None and not self.open_video["src"]:
@@ -122,15 +137,17 @@ class SlideParser(HTMLParser):
         if not self.in_section:
             return
         if tag == "section":
-            self.in_section, self.section_done = False, True
-            return
+            self.section_depth -= 1
+            if self.section_depth == 0:
+                self.in_section, self.section_done = False, True
+                return
         # Tolerant of unclosed tags: close back to the nearest matching open element.
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
                 for t, parts in reversed(self.stack[i:]):
                     self.close_tag(t, parts)
-                    if t == "aside":
-                        self.aside_depth -= 1
+                    if t in MUTED:
+                        self.muted -= 1
                     if t == "video":
                         self.open_video = None
                 del self.stack[i:]
@@ -143,7 +160,7 @@ class SlideParser(HTMLParser):
             self.first_text = collapse(parts)  # first block with text, not the whole slide's
 
     def add_text(self, data):
-        if self.aside_depth:
+        if self.muted:
             return
         for _, parts in self.stack:
             parts.append(data)
@@ -219,9 +236,10 @@ def build_manifest(deck_dir):
             raise Fail(f"slide id '{sid}' in deck.json is not [A-Za-z0-9_-]{{1,64}}")
     extra = sorted(f.stem for f in slides_dir.glob("*.html") if f.stem not in order) if slides_dir.is_dir() else []
     if extra:
-        warnings.append("slide files not in deck.json order, appended last: " + ", ".join(extra))
+        # The export holds only the listed slides; counting more here would put the indexes out of step.
+        warnings.append("slide files not in deck.json order, left out: " + ", ".join(extra))
     entries, cw, ch = [], 1920, 1080
-    for n, sid in enumerate(order + extra, 1):
+    for n, sid in enumerate(order, 1):
         f = slides_dir / f"{sid}.html"
         if not f.is_file():
             raise Fail(f"slide '{sid}' is listed in deck.json but project/slides/{sid}.html is missing")

@@ -119,8 +119,31 @@ def test_fails_on_slide_without_section(tmp_path):
     fails(run(deck), "slide cover: no <section>")
 
 
-def test_slide_file_missing_from_order_is_appended_with_warning(tmp_path):
+def test_slide_file_missing_from_order_is_left_out_with_warning(tmp_path):
+    # The export has only the slides in "order", so the manifest must not count more.
     deck = make_deck(tmp_path, ["cover"], {"cover": SLIDES["cover"], "plan": SLIDES["plan"]})
     r = run(deck)
-    assert r.returncode == 0 and "appended last: plan" in r.stderr
-    assert [s["id"] for s in json.loads(r.stdout)["slides"]] == ["cover", "plan"]
+    assert r.returncode == 0 and "left out" in r.stderr and "plan" in r.stderr
+    assert [s["id"] for s in json.loads(r.stdout)["slides"]] == ["cover"]
+
+
+def test_nested_section_does_not_end_the_slide(tmp_path):
+    html = '<section id=s><section>A</section><h2 data-build-in=rise>B</h2><video src="/v"></video></section>'
+    deck = make_deck(tmp_path, ["s"], {"s": html})
+    slide = json.loads(run(deck).stdout)["slides"][0]
+    assert slide["builds"] == [{"effect": "rise", "text": "B"}]
+    assert [v["src"] for v in slide["videos"]] == ["/v"]
+
+
+def test_style_and_script_text_never_becomes_title_or_build_text(tmp_path):
+    html = ('<section id=s><style>.a { color: red }</style><script>var x = 1;</script>'
+            '<div data-build-in=fade><style>.b{}</style>Shown</div></section>')
+    slide = json.loads(run(make_deck(tmp_path, ["s"], {"s": html})).stdout)["slides"][0]
+    assert slide["title"] == "Shown"
+    assert slide["builds"] == [{"effect": "fade", "text": "Shown"}]
+
+
+def test_whitespace_in_title_and_build_text_is_collapsed(tmp_path):
+    html = '<section id=s><h1>  Two\n   lines </h1><p data-build-in=pop>a \t b\n c</p></section>'
+    slide = json.loads(run(make_deck(tmp_path, ["s"], {"s": html})).stdout)["slides"][0]
+    assert slide["title"] == "Two lines" and slide["builds"][0]["text"] == "a b c"
