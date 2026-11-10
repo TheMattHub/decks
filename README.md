@@ -57,7 +57,7 @@ Claude Code:
 
 ```powershell
 claude plugin marketplace add TheMattHub/decks
-claude plugin install decks@themathub-decks
+claude plugin install decks@thematthub-decks
 ```
 
 Other agents that read Agent Skills (`SKILL.md`), such as Codex CLI, Gemini CLI, GitHub Copilot or OpenCode: copy `skills/making-presentations` into the agent's skills folder (for example `~/.agents/skills/`). The skill and its scripts are self-contained in that folder. The Claude Slides step needs Claude; with another agent, use the template path or build the deck through the scripts.
