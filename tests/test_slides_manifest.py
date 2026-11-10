@@ -143,6 +143,14 @@ def test_style_and_script_text_never_becomes_title_or_build_text(tmp_path):
     assert slide["builds"] == [{"effect": "fade", "text": "Shown"}]
 
 
+def test_build_text_is_the_first_text_block(tmp_path):
+    # The export puts each block in its own box, so the whole card's text would match none of them.
+    html = ('<section id=s><h2>Cards</h2><div data-build-in=rise><h3>Card one</h3><p>What card one says.</p></div>'
+            '<span data-build-in=pop>Inline <b>only</b></span></section>')
+    slide = json.loads(run(make_deck(tmp_path, ["s"], {"s": html})).stdout)["slides"][0]
+    assert [b["text"] for b in slide["builds"]] == ["Card one", "Inline only"]
+
+
 def test_whitespace_in_title_and_build_text_is_collapsed(tmp_path):
     html = '<section id=s><h1>  Two\n   lines </h1><p data-build-in=pop>a \t b\n c</p></section>'
     slide = json.loads(run(make_deck(tmp_path, ["s"], {"s": html})).stdout)["slides"][0]

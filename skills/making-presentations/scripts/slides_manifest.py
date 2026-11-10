@@ -29,7 +29,7 @@ Manifest (flat; every key is always present):
           "transition": "fade",          # fade | push | magic | null (other names kept verbatim)
           "builds": [                    # elements with data-build-in, in document order
             {"effect": "rise",           # rise | fade | pop (other names kept verbatim)
-             "text": "Costs fell 12%"}   # the element's text, first 60 characters; "" for no text
+             "text": "Costs fell 12%"}   # the element's first text block, first 60 characters; "" for no text
           ],
           "videos": [                    # <video> elements, in document order
             {"src": "/_blob/ab12",       # the src attribute, else the first <source src>; "" if none
@@ -49,8 +49,9 @@ How the applier must match (Invoke-FinishManifest):
   - Slides are placed by "index"; "title" is only a check. It may be empty or repeated across slides.
   - Titles and build texts are whitespace-collapsed (runs of spaces, tabs and newlines become one space,
     ends trimmed): collapse the deck's text the same way before comparing.
-  - A build "text" is a prefix of the element's text, at most 60 characters. Compare it literally (starts-with
-    or substring), never as a regular expression.
+  - A build "text" is the element's first text block (a card's heading, not the whole card: the export puts
+    each block in its own box), at most 60 characters. Compare it literally (starts-with or substring), never
+    as a regular expression.
   - A build with "text" "" has no text (an image or a bare shape): it cannot be found by text.
   - A video "src" names the file by its last path segment ("/_blob/ab12" -> ab12): look that up in the media
     folder.
@@ -92,12 +93,12 @@ class SlideParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.section = None       # attrs of the first <section>
-        self.stack = []           # open elements: [tag, parts]
+        self.stack = []           # open elements: [tag, parts, build entry or None]
         self.in_section = False
         self.section_done = False
         self.section_depth = 0    # a <section> inside the slide's own is an ordinary element
         self.muted = 0            # inside <aside>, <style> or <script>: text is not slide text
-        self.builds = []          # [effect, text parts]
+        self.builds = []          # [effect, text parts, first text block or None]
         self.videos = []          # {"src","poster","style"}
         self.headings = []
         self.first_text = None
@@ -118,15 +119,16 @@ class SlideParser(HTMLParser):
             self.add_text(" ")
         if tag == "source" and self.open_video is not None and not self.open_video["src"]:
             self.open_video["src"] = a.get("src") or ""
-        parts = []
+        parts, build = [], None
         if a.get("data-build-in") is not None:
-            self.builds.append([a["data-build-in"], parts])  # shares the frame's text list
+            build = [a["data-build-in"], parts, None]  # shares the frame's text list
+            self.builds.append(build)
         if tag == "video":
             self.open_video = {"src": a.get("src") or "", "poster": a.get("poster") or None,
                                "style": a.get("style")}
             self.videos.append(self.open_video)
         if tag not in VOID:
-            self.stack.append([tag, parts])
+            self.stack.append([tag, parts, build])
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -144,8 +146,9 @@ class SlideParser(HTMLParser):
         # Tolerant of unclosed tags: close back to the nearest matching open element.
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
-                for t, parts in reversed(self.stack[i:]):
-                    self.close_tag(t, parts)
+                for j in range(len(self.stack) - 1, i - 1, -1):
+                    t = self.stack[j][0]
+                    self.close_tag(j)
                     if t in MUTED:
                         self.muted -= 1
                     if t == "video":
@@ -153,16 +156,22 @@ class SlideParser(HTMLParser):
                 del self.stack[i:]
                 return
 
-    def close_tag(self, tag, parts):
+    def close_tag(self, i):
+        tag, parts, _ = self.stack[i]
+        text = collapse(parts)
         if tag in HEADINGS:
-            self.headings.append(collapse(parts))
-        elif tag not in INLINE and self.first_text is None and collapse(parts):
-            self.first_text = collapse(parts)  # first block with text, not the whole slide's
+            self.headings.append(text)
+        elif tag not in INLINE and self.first_text is None and text:
+            self.first_text = text  # first block with text, not the whole slide's
+        if tag not in INLINE and text:
+            for frame in self.stack[:i + 1]:  # the builds this block is in, or is
+                if frame[2] is not None and frame[2][2] is None:
+                    frame[2][2] = text
 
     def add_text(self, data):
         if self.muted:
             return
-        for _, parts in self.stack:
+        for _, parts, _ in self.stack:
             parts.append(data)
 
     def handle_data(self, data):
@@ -174,8 +183,8 @@ def slide_entry(index, sid, html, warnings):
     p = SlideParser()
     p.feed(html)
     p.close()
-    for t, parts in reversed(p.stack):  # unclosed at end of file
-        p.close_tag(t, parts)
+    for i in range(len(p.stack) - 1, -1, -1):  # unclosed at end of file
+        p.close_tag(i)
     if p.section is None:
         raise Fail(f"slide {sid}: no <section> in its file")
     s = p.section
@@ -183,10 +192,11 @@ def slide_entry(index, sid, html, warnings):
     if transition and transition not in TRANSITIONS:
         warnings.append(f"slide {sid}: unknown transition '{transition}' (kept)")
     builds = []
-    for effect, parts in p.builds:
+    for effect, parts, first in p.builds:
         if effect not in BUILDS:
             warnings.append(f"slide {sid}: unknown build-in '{effect}' (kept)")
-        builds.append({"effect": effect, "text": collapse(parts)[:TEXT_MAX].rstrip()})
+        text = first if first is not None else collapse(parts)  # an inline element is its own block
+        builds.append({"effect": effect, "text": text[:TEXT_MAX].rstrip()})
     title = next((h for h in p.headings if h), None)
     if title is None:
         title = p.first_text or ""
