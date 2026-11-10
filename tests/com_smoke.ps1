@@ -471,6 +471,31 @@ if (Get-Process -Id $id -ErrorAction SilentlyContinue) { "running" } else { "sto
         $out -join ' '; ($out -join ' ') -eq "stopped"
     }
     if ((Wait-NoPowerPoint 15) -lt 0) { "FAIL  G1/G2 skipped: a PowerPoint is still running"; $script:failed++; return }
+    # PowerPoint is one instance: a person who opens it while a script runs joins the script's process.
+    Check "G3 the person joins the script's PowerPoint: Close-Deck does not quit it, Stop-PowerPoint refuses" {
+        try {
+            $s = Open-Deck $base -ReadOnly
+            $own = [string]$script:PptxComStartedPid
+            [void](Invoke-Child '$app = New-Object -ComObject PowerPoint.Application; $app.Visible = -1' @())   # on its start screen
+            Close-Deck $s
+            # A quitting PowerPoint refuses the person's next call, which then starts a second process.
+            [void](Invoke-Child '$app = New-Object -ComObject PowerPoint.Application; $p = $app.Presentations.Add(-1); [void]$p.Slides.Add(1, 12)' @())
+            $joined = (@(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ',') -eq $own
+            $r = Throws { Stop-PowerPoint } 'visible window'
+            "joined $joined, Stop-PowerPoint $r"
+            $joined -and ($r -eq $true) -and ((@(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ',') -eq $own)
+        } finally {
+            # The stand-in is the test's own: its draft closes unsaved and it quits through COM.
+            if (@(Get-Process POWERPNT -ErrorAction SilentlyContinue).Count) {
+                $app = New-Object -ComObject PowerPoint.Application
+                foreach ($p in @($app.Presentations)) { $p.Saved = -1; $p.Close(); [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($p) }
+                $app.Quit(); [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($app)
+                $p = $null; $app = $null
+                [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+            }
+        }
+    }
+    if ((Wait-NoPowerPoint 15) -lt 0) { "FAIL  G1/G2 skipped: the G3 stand-in is still running"; $script:failed++; return }
     # The stand-in: a PowerPoint with a window, started before the helper attaches, on its start screen.
     $person = New-Object -ComObject PowerPoint.Application
     $person.Visible = -1

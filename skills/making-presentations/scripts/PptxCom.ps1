@@ -74,13 +74,15 @@ function Test-OwnPowerPoint {
     [bool](Get-Process -Id $script:PptxComStartedPid -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -eq 'POWERPNT' })
 }
 
-# Ends a hung PowerPoint without risking anyone's work. Stops it when this process started it; otherwise
-# only when it has no visible window and no presentation with unsaved changes. A PowerPoint that does not
-# answer within 10 s cannot say what is unsaved, so then only the window decides. Throws, changing nothing,
-# in every other case. Never Stop-Process POWERPNT directly: the person's unsaved work lives there.
+# Ends a hung PowerPoint without risking anyone's work. Stops it only when it has no visible window and,
+# unless this process started it, no presentation with unsaved changes: PowerPoint is one instance, so a
+# person who opens it while a script runs joins the script's process. A PowerPoint that does not answer
+# within 10 s cannot say what is unsaved, so then only the window decides. Throws, changing nothing, in
+# every other case. Never Stop-Process POWERPNT directly: the person's unsaved work lives there.
 function Stop-PowerPoint {
     $p = @(Get-Process POWERPNT -ErrorAction SilentlyContinue) | Select-Object -First 1
     if (-not $p) { return }
+    $unsaved = @()
     if ($p.Id -ne $script:PptxComStartedPid) {
         # Asked on another thread, so a hung PowerPoint cannot hang this one; strings come back, no COM objects.
         $ps = [powershell]::Create().AddScript({
@@ -92,9 +94,10 @@ function Stop-PowerPoint {
         $answered = $job.AsyncWaitHandle.WaitOne(10000)
         $unsaved = if ($answered) { @($ps.EndInvoke($job) | ForEach-Object { [string]$_ }) } else { @() }
         if ($answered) { $ps.Dispose() } else { [void]$ps.BeginStop($null, $null) }   # a hung call cannot be waited for
-        $window = (Get-Process -Id $p.Id -ErrorAction SilentlyContinue).MainWindowHandle -ne [IntPtr]::Zero
-        if ($unsaved.Count) { throw "PowerPoint was not stopped: unsaved changes in " + ($unsaved -join ", ") }
-        if ($window) { throw "PowerPoint was not stopped: it has a visible window (the person's; close it there)" }
+    }
+    if ($unsaved.Count) { throw "PowerPoint was not stopped: unsaved changes in " + ($unsaved -join ", ") }
+    if ((Get-Process -Id $p.Id -ErrorAction SilentlyContinue).MainWindowHandle -ne [IntPtr]::Zero) {
+        throw "PowerPoint was not stopped: it has a visible window (the person's; close it there)"
     }
     # A windowless PowerPoint may exit by itself once the probe lets go of it.
     try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { if (-not $p.HasExited) { throw } }
@@ -153,9 +156,11 @@ function Get-DeckHandEdits($session) {
 
 # Closes the deck and drops the session's COM references: PowerPoint, started windowless, stays alive while
 # any reference lives, and the runtime frees the intermediate ones only on a garbage collection.
+# Quits PowerPoint only when this process started it, no presentation is left and it has no window: a person
+# who opened PowerPoint meanwhile joined this instance and made it visible.
 function Close-Deck($session) {
     $session.Deck.Close()
-    if (-not $session.WasRunning -and $session.App.Presentations.Count -eq 0) { $session.App.Quit() }
+    if (-not $session.WasRunning -and $session.App.Presentations.Count -eq 0 -and $session.App.Visible -eq 0) { $session.App.Quit() }
     [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($session.Deck)
     # One release, not a final one: every session in this process shares one wrapper around the application.
     [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($session.App)
