@@ -245,6 +245,127 @@ def test_media_fit_exits_1_when_the_last_step_is_still_over(tmp_path):
     assert r.returncode == 1 and "--fit step 4" in r.stdout
 
 
+def test_footprint_rotation_does_not_change_the_need(tmp_path):
+    # a:ext is the unrotated box, so a quarter-turn leaves the need as it is: need 240 x 480 -> k 0.24
+    prs, img = footprint_deck(tmp_path, (4000, 2000))
+    pic = prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, 1524000, 3048000)
+    pic.rotation = 90
+    assert near(media_size(prs, tmp_path), (960, 480))
+
+
+def rewrite_zip(deck, change):
+    """Replace parts of a deck: change(name, data) returns the new bytes."""
+    out = deck.with_name("rewritten.pptx")
+    with zipfile.ZipFile(deck) as zin, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            zout.writestr(item, change(item.filename, zin.read(item)))
+    return out
+
+
+def run_media(deck, tmp_path, *args):
+    out = tmp_path / "out.pptx"
+    r = run("pptx_media.py", deck, out, "--skip-video", "--goal", "share", *args)
+    assert r.returncode == 0, r.stdout + r.stderr
+    with zipfile.ZipFile(out) as z, z.open("ppt/media/image1.png") as f:
+        return Image.open(f).size
+
+
+def test_footprint_photo_also_used_as_background_keeps_the_plain_cap(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    pic = slide.shapes.add_picture(img, 0, 0, width=QUARTER)
+    rid = pic._element.blip_rId  # one rId per target: the background shares it with the small picture
+    bg = ('<p:bg xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+          'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+          f'<p:bgPr><a:blipFill><a:blip r:embed="{rid}"/></a:blipFill><a:effectLst/></p:bgPr></p:bg>')
+    from lxml import etree
+    slide._element.cSld.insert(0, etree.fromstring(bg))
+    assert near(media_size(prs, tmp_path), (1920, 1080))
+
+
+def test_footprint_placeholder_picture_without_geometry_keeps_the_plain_cap(tmp_path):
+    import copy
+    prs, img = footprint_deck(tmp_path)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    pic = slide.shapes.add_picture(img, 0, 0, width=QUARTER)
+    twin = copy.deepcopy(pic._element)
+    twin.spPr.remove(twin.spPr.xfrm)
+    twin.nvPicPr.cNvPr.set("id", "99")
+    pic._element.addnext(twin)
+    assert near(media_size(prs, tmp_path), (1920, 1080))
+
+
+def test_footprint_group_without_chext_keeps_the_plain_cap_and_writes_the_copy(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    group = prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_group_shape()
+    group.shapes.add_picture(img, 0, 0, width=QUARTER)
+    xfrm = group._element.grpSpPr.xfrm
+    xfrm.remove(xfrm.chExt)
+    assert near(media_size(prs, tmp_path), (1920, 1080))
+
+
+def test_footprint_slide_that_does_not_parse_keeps_the_plain_cap(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=QUARTER)
+    deck = rewrite_zip(save(prs, tmp_path),
+                       lambda n, d: b"<p:sld><unclosed" if n == "ppt/slides/slide1.xml" else d)
+    assert near(run_media(deck, tmp_path), (1920, 1080))
+
+
+def test_footprint_relationship_without_target_keeps_the_plain_cap(tmp_path):
+    prs, img = footprint_deck(tmp_path)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(img, 0, 0, width=QUARTER)
+    deck = rewrite_zip(save(prs, tmp_path), lambda n, d: d.replace(
+        b"</Relationships>", b'<Relationship Id="rId77" Type="x"/></Relationships>')
+        if n == "ppt/slides/_rels/slide1.xml.rels" else d)
+    assert near(run_media(deck, tmp_path), (1920, 1080))
+
+
+def test_media_cmyk_jpeg_is_kept_as_it_is(tmp_path):
+    # converting to RGB while keeping the CMYK profile would be invalid colour: leave the file alone
+    prs = Presentation()
+    img = tmp_path / "c.jpg"
+    Image.effect_noise((3000, 2000), 40).convert("CMYK").save(img, quality=95)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(str(img), 0, 0, width=prs.slide_width)
+    deck, out = tmp_path / "in.pptx", tmp_path / "out.pptx"
+    prs.save(deck)
+    assert run("pptx_media.py", deck, out, "--skip-video", "--goal", "email").returncode == 0
+    with zipfile.ZipFile(out) as z:
+        assert z.read("ppt/media/image1.jpg") == img.read_bytes()
+
+
+def test_media_greyscale_jpeg_stays_greyscale_with_its_profile(tmp_path):
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()  # stands in for a grey profile
+    prs = Presentation()
+    img = tmp_path / "g.jpg"
+    Image.effect_noise((3000, 2000), 40).convert("L").save(img, quality=95, icc_profile=icc)
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_picture(str(img), 0, 0, width=prs.slide_width)
+    deck, out = tmp_path / "in.pptx", tmp_path / "out.pptx"
+    prs.save(deck)
+    assert run("pptx_media.py", deck, out, "--skip-video", "--goal", "email").returncode == 0
+    with zipfile.ZipFile(out) as z, z.open("ppt/media/image1.jpg") as f:
+        got = Image.open(f)
+        assert got.mode == "L" and got.info.get("icc_profile") == icc and got.width < 3000
+
+
+def test_media_video_with_rotation_metadata_is_not_squashed(tmp_path):
+    flat, turned = tmp_path / "flat.mp4", tmp_path / "turned.mp4"
+    make_video(flat, 640, 360)
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-display_rotation", "90",
+                    "-i", str(flat), "-c", "copy", str(turned)], check=True)
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6]).shapes.add_movie(
+        str(turned), 0, 0, prs.slide_width, prs.slide_height, mime_type="video/mp4")
+    deck, out = tmp_path / "in.pptx", tmp_path / "out.pptx"
+    prs.save(deck)
+    assert run("pptx_media.py", deck, out, "--max-video-px", 320, "--no-footprint").returncode == 0
+    with zipfile.ZipFile(out) as z:
+        name = next(n for n in z.namelist() if n.endswith(".mp4"))
+        z.extract(name, tmp_path)
+    assert near(video_size(tmp_path / name), (180, 320))  # the frames as ffmpeg turns them, aspect kept
+
+
 def test_media_fit_without_a_limit_does_nothing(tmp_path):
     deck = deck_with_big_picture(tmp_path)
     r = run("pptx_media.py", deck, tmp_path / "out.pptx", "--skip-video", "--fit")

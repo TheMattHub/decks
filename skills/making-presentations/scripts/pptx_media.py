@@ -93,9 +93,9 @@ def footprints(z):
     of the uncropped image. A part missing from the result is used somewhere its size is unknown."""
     sld = ET.fromstring(z.read("ppt/presentation.xml")).find("p:sldSz", NS)
     longer = max(int(sld.get("cx")), int(sld.get("cy")))
-    need, plain, accounted = {}, set(), set()
+    need, plain = {}, set()
 
-    def walk(el, sx, sy, slide, rids):
+    def walk(el, sx, sy, rids, measured):
         for c in el:
             if c.tag == "{%s}pic" % NS["p"]:
                 x, srcrect = c.find("p:spPr/a:xfrm", NS), c.find("p:blipFill/a:srcRect", NS)
@@ -103,8 +103,6 @@ def footprints(z):
                 if ext is None or not int(ext.get("cx")) or not int(ext.get("cy")):
                     continue  # no own geometry (a placeholder): its media stay unaccounted, so plain
                 w, h = int(ext.get("cx")) * sx, int(ext.get("cy")) * sy
-                if 45 < int(x.get("rot", 0)) / 60000 % 180 < 135:
-                    w, h = h, w  # turned a quarter: the image's width runs along the slide's height
                 crop = {k: int(srcrect.get(k, 0)) / 100000 if srcrect is not None else 0 for k in "ltrb"}
                 kw, kh = 1 - crop["l"] - crop["r"], 1 - crop["t"] - crop["b"]
                 if kw <= 0 or kh <= 0:
@@ -116,23 +114,36 @@ def footprints(z):
                     if rid in rids:
                         old = need.get(rids[rid], (0, 0))
                         need[rids[rid]] = (max(old[0], w / longer / kw), max(old[1], h / longer / kh))
-                        accounted.add((slide, rid))
+                        measured[rid] = measured.get(rid, 0) + 1
                 continue
             g = c.find("p:grpSpPr/a:xfrm", NS) if c.tag == "{%s}grpSp" % NS["p"] else None
             if g is not None and int(g.find("a:chExt", NS).get("cx")) and int(g.find("a:chExt", NS).get("cy")):
                 e, ce = g.find("a:ext", NS), g.find("a:chExt", NS)
                 walk(c, sx * int(e.get("cx")) / int(ce.get("cx")), sy * int(e.get("cy")) / int(ce.get("cy")),
-                     slide, rids)
+                     rids, measured)
             else:
-                walk(c, sx, sy, slide, rids)
+                walk(c, sx, sy, rids, measured)
 
     for name in z.namelist():
         if not name.endswith(".rels"):
             continue
         if re.fullmatch(r"ppt/slides/_rels/slide\d+\.xml\.rels", name):
             rids = media_targets(z, name)
-            walk(ET.fromstring(z.read("ppt/slides/" + name.rsplit("/", 1)[1][:-5])), 1, 1, name, rids)
-            plain.update(t for rid, t in rids.items() if (name, rid) not in accounted)
+            measured = {}
+            try:
+                root = ET.fromstring(z.read("ppt/slides/" + name.rsplit("/", 1)[1][:-5]))
+                walk(root, 1, 1, rids, measured)
+                # PowerPoint gives a slide one rId per target, so a photo that is also the background (or a
+                # fill, or a picture without geometry) shares the rId of the measured picture: an rId counts
+                # only when every use of it on the slide was measured.
+                used = {}
+                for e in root.iter():
+                    for k in ("embed", "link"):
+                        if e.get(R + k):
+                            used[e.get(R + k)] = used.get(e.get(R + k), 0) + 1
+                plain.update(t for rid, t in rids.items() if measured.get(rid, 0) != used.get(rid, 0))
+            except Exception:  # a slide that cannot be read: its media keep the plain cap
+                plain.update(rids.values())
         else:
             plain.update(media_targets(z, name).values())
     return {k: v for k, v in need.items() if k not in plain}
@@ -148,6 +159,10 @@ def shrink_picture(data, ext, max_px, quality, foot=None):
     img = Image.open(io.BytesIO(data))
     # Without the profile a wide-gamut photo shifts colour; resize() and convert() drop it, so take it first.
     icc = img.info.get("icc_profile")
+    # A JPEG that is not RGB or grey (CMYK) would need converting, and its profile no longer fits the new
+    # mode: invalid colour. Leave such a file as it is.
+    if ext != ".png" and img.mode not in ("RGB", "L"):
+        return None
     k = scale_factor(*img.size, max_px, foot)
     if k < 1:
         img = img.resize((max(1, round(img.width * k)), max(1, round(img.height * k))), Image.LANCZOS)
@@ -155,7 +170,7 @@ def shrink_picture(data, ext, max_px, quality, foot=None):
     if ext == ".png":
         img.save(out, "PNG", optimize=True, icc_profile=icc)
     else:
-        img.convert("RGB").save(out, "JPEG", quality=quality, optimize=True, progressive=True, icc_profile=icc)
+        img.save(out, "JPEG", quality=quality, optimize=True, progressive=True, icc_profile=icc)
     return out.getvalue()
 
 
@@ -163,7 +178,13 @@ def video_size(ffmpeg, src):
     """Width and height from ffmpeg's stream listing (no ffprobe ships with imageio-ffmpeg)."""
     info = subprocess.run([ffmpeg, "-i", str(src)], capture_output=True, text=True).stderr
     m = re.search(r"Video:.*?, (\d{2,5})x(\d{2,5})", info)
-    return (int(m[1]), int(m[2])) if m else None
+    if not m:
+        return None
+    # ffmpeg turns the frames by the rotation metadata before any filter, so the size it works on is turned too.
+    turn = re.search(r"rotat\w* (?:of |: ?)(-?\d+)", info)
+    if turn and int(turn[1]) % 180 == 90:
+        return int(m[2]), int(m[1])
+    return int(m[1]), int(m[2])
 
 
 def shrink_video(data, ext, crf, ffmpeg, max_px, foot=None):
@@ -174,8 +195,9 @@ def shrink_video(data, ext, crf, ffmpeg, max_px, foot=None):
         size = video_size(ffmpeg, src)
         k = scale_factor(*size, max_px, foot) if size else 1
         if k < 1:
-            # libx264 with yuv420p needs even dimensions
-            scale = ["-vf", "scale=" + ":".join(str(max(2, round(d * k / 2) * 2)) for d in size)]
+            # By factor, not fixed W:H: the filter sees the frames as ffmpeg turned them, whatever the rotation.
+            # libx264 with yuv420p needs even dimensions.
+            scale = ["-vf", f"scale=trunc(iw*{k}/2)*2:trunc(ih*{k}/2)*2"]
         cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", str(src), *scale, "-c:v", "libx264", "-crf", str(crf),
                "-preset", "slow", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
                "-movflags", "+faststart", str(dst)]
@@ -252,7 +274,11 @@ def main():
         ffmpeg = None if a.skip_video else ffmpeg_exe()
         if not a.skip_video and not ffmpeg:
             print("no ffmpeg found: videos are left as they are")
-        feet = {} if a.no_footprint else footprints(z)
+        try:
+            feet = {} if a.no_footprint else footprints(z)
+        except Exception as e:  # sizes by footprint are an optimisation: never stop the copy for them
+            print(f"footprints skipped, plain caps used: {e}")
+            feet = {}
         settings = (max_px, video_px, quality, crf)
         size, saved = write_copy(z, dst, ffmpeg, feet, *settings)
         if a.fit and not limit:
