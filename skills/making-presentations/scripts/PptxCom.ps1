@@ -17,6 +17,7 @@ $PpFade = 3849; $PpPushUp = 3848; $PpMorph = 3953          # ppEntryEffect (slid
 $MsoFadeIn = 10; $MsoRiseUp = 34; $MsoZoom = 23            # msoAnimEffect (build-ins)
 $OnClick = 1; $WithPrevious = 2; $AfterPrevious = 3         # msoAnimTrigger
 $MsoPicture = 13; $MsoMedia = 16                           # msoShapeType
+$PdfPrinter = "Microsoft Print to PDF"                     # Export-DeckPdf -Notes prints to it
 
 # "#RRGGBB" -> the BGR integer COM expects in .RGB (a plain 0xRRGGBB gives the wrong colour).
 function ConvertTo-Bgr([string]$hex) {
@@ -37,26 +38,68 @@ function Open-Deck([string]$path, [switch]$ReadOnly) {
     }
     # Attaches to a running PowerPoint if there is one; Close-Deck leaves it running in that case.
     $app = Get-PowerPointApp
-    $wasRunning = $app.Presentations.Count -gt 0
+    $wasRunning = -not (Test-OwnPowerPoint)
     $deck = $app.Presentations.Open($path, [bool]$ReadOnly, $false, $false)   # ReadOnly, Untitled, WithWindow
     [pscustomobject]@{ App = $app; Deck = $deck; Path = $path; WasRunning = $wasRunning }
 }
 
 # The PowerPoint application. A PowerPoint still shutting down (the previous script just ended) rejects
 # calls for a few seconds, so retry for up to 20 s, creating the object again each time.
+# PowerPoint is one instance per Windows session, so this attaches to the person's PowerPoint when it runs.
+# A POWERPNT process that was not there before is the one this process started: its id is kept, and only
+# that instance is ever quit (Close-Deck) or stopped without checks (Stop-PowerPoint).
 function Get-PowerPointApp {
+    $before = @(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     $deadline = (Get-Date).AddSeconds(20)
     while ($true) {
         try {
             $app = New-Object -ComObject PowerPoint.Application
             [void]$app.Presentations.Count       # the first call is the one a closing PowerPoint rejects
-            return $app
+            break
         } catch {
             $busy = $_.Exception.Message -match 'rejected|RPC server is unavailable|0x80010001|0x800706BA|0x80080005'
             if (-not $busy -or (Get-Date) -gt $deadline) { throw }
             Start-Sleep -Milliseconds 500
         }
     }
+    $new = @(Get-Process POWERPNT -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+    if ($new.Count) { $script:PptxComStartedPid = $new[0].Id }
+    $app
+}
+
+# True when the running PowerPoint is the one this process started (a PowerPoint sitting on its start
+# screen is still the person's: whether a presentation is open says nothing about who started it).
+function Test-OwnPowerPoint {
+    if (-not $script:PptxComStartedPid) { return $false }
+    [bool](Get-Process -Id $script:PptxComStartedPid -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -eq 'POWERPNT' })
+}
+
+# Ends a hung PowerPoint without risking anyone's work. Stops it when this process started it; otherwise
+# only when it has no visible window and no presentation with unsaved changes. A PowerPoint that does not
+# answer within 10 s cannot say what is unsaved, so then only the window decides. Throws, changing nothing,
+# in every other case. Never Stop-Process POWERPNT directly: the person's unsaved work lives there.
+function Stop-PowerPoint {
+    $p = @(Get-Process POWERPNT -ErrorAction SilentlyContinue) | Select-Object -First 1
+    if (-not $p) { return }
+    if ($p.Id -ne $script:PptxComStartedPid) {
+        # Asked on another thread, so a hung PowerPoint cannot hang this one; strings come back, no COM objects.
+        $ps = [powershell]::Create().AddScript({
+            $app = New-Object -ComObject PowerPoint.Application
+            foreach ($d in @($app.Presentations)) { if ($d.Saved -eq 0) { $d.FullName } }
+            [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($app)
+        })
+        $job = $ps.BeginInvoke()
+        $answered = $job.AsyncWaitHandle.WaitOne(10000)
+        $unsaved = if ($answered) { @($ps.EndInvoke($job) | ForEach-Object { [string]$_ }) } else { @() }
+        if ($answered) { $ps.Dispose() } else { [void]$ps.BeginStop($null, $null) }   # a hung call cannot be waited for
+        $window = (Get-Process -Id $p.Id -ErrorAction SilentlyContinue).MainWindowHandle -ne [IntPtr]::Zero
+        if ($unsaved.Count) { throw "PowerPoint was not stopped: unsaved changes in " + ($unsaved -join ", ") }
+        if ($window) { throw "PowerPoint was not stopped: it has a visible window (the person's; close it there)" }
+    }
+    # A windowless PowerPoint may exit by itself once the probe lets go of it.
+    try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { if (-not $p.HasExited) { throw } }
+    [void]$p.WaitForExit(10000)
+    if ($p.Id -eq $script:PptxComStartedPid) { $script:PptxComStartedPid = $null }
 }
 
 # Saves as .pptx with the fonts embedded (needs fonts whose licence allows embedding, e.g. OFL), warns for
@@ -290,7 +333,7 @@ function Get-PlaceholderKind([int]$type) {
 # -KeepSlides keeps them, for a slide library.
 function New-DeckFromTemplate([string]$template, [switch]$KeepSlides) {
     $app = Get-PowerPointApp
-    $wasRunning = $app.Presentations.Count -gt 0
+    $wasRunning = -not (Test-OwnPowerPoint)
     $deck = $app.Presentations.Open((Resolve-Path $template).Path, $false, $true, $false)   # Untitled: a copy
     if (-not $KeepSlides) { while ($deck.Slides.Count -gt 0) { $deck.Slides.Item(1).Delete() } }
     [pscustomobject]@{ App = $app; Deck = $deck; Path = $null; WasRunning = $wasRunning }
@@ -395,7 +438,7 @@ function New-TemplateFromTheme([string]$outPath, [string]$dark, [string]$light, 
                                [string]$headingFont, [string]$bodyFont, [string]$dark2, [string]$light2) {
     if (-not $dark2) { $dark2 = $dark }; if (-not $light2) { $light2 = $light }
     $app = Get-PowerPointApp
-    $wasRunning = $app.Presentations.Count -gt 0
+    $wasRunning = -not (Test-OwnPowerPoint)
     $p = $app.Presentations.Add($false)
     try {
         $p.PageSetup.SlideWidth = 960; $p.PageSetup.SlideHeight = 540           # 16:9
@@ -449,7 +492,10 @@ function Get-DeckDump($deck) {
         foreach ($sh in @($s.Shapes)) {
             $inside = $sh.Type -eq 6 -or $sh.HasTable
             $t = if (-not $inside -and $sh.HasTextFrame) { Format-Text $sh } else { "" }
-            "  [{0}] type {1}  {2:N0},{3:N0} {4:N0}x{5:N0}  {6}" -f $sh.Name, $sh.Type, $sh.Left, $sh.Top, $sh.Width, $sh.Height, $t
+            # Rounded by hand: "{0:N0}" rounds a COM single differently in Windows PowerShell 5.1 and PowerShell 7
+            # (112.49999 gives 113 or 112), and a record from one shell must compare equal in the other.
+            $box = @($sh.Left, $sh.Top, $sh.Width, $sh.Height) | ForEach-Object { [long][math]::Round([double]$_, [MidpointRounding]::AwayFromZero) }
+            "  [{0}] type {1}  {2},{3} {4}x{5}  {6}" -f $sh.Name, $sh.Type, $box[0], $box[1], $box[2], $box[3], $t
             if ($inside) { foreach ($it in @(Get-ShapeTextItems $sh)) { "    [{0}]  {1}" -f $it.Name, (Format-Text $it.Shape) } }
         }
         $n = $s.NotesPage.Shapes.Placeholders.Item(2).TextFrame.TextRange.Text
@@ -582,6 +628,12 @@ function Write-TileSheet([string[]]$files, [string]$outPng, $columns, $w, $h, $g
 # read alone, from the same source). Hidden slides are left out. The deck itself is not changed.
 function Export-DeckPdf($deck, [string]$outPdf, [switch]$Notes) {
     $outPdf = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outPdf)
+    if ($Notes) {
+        Add-Type -AssemblyName System.Drawing
+        if (@([System.Drawing.Printing.PrinterSettings]::InstalledPrinters) -notcontains $PdfPrinter) {
+            throw "Export-DeckPdf -Notes needs the '$PdfPrinter' printer, which is not installed (Windows Settings > Printers & scanners)"
+        }
+    }
     # Works on a throwaway copy: PowerPoint writes only the first PDF saved from an open deck (later saves
     # return without writing), a PDF save ignores PrintOptions.OutputType, and ExportAsFixedFormat fails
     # under late binding. Notes pages therefore go through the "Microsoft Print to PDF" printer.
@@ -589,18 +641,19 @@ function Export-DeckPdf($deck, [string]$outPdf, [switch]$Notes) {
     $deck.SaveCopyAs($tmp)
     $start = Get-Date
     $app = $deck.Application
-    $copy = $app.Presentations.Open($tmp, -1, 0, 0)                     # ReadOnly, Untitled no, no window
+    $copy = $null
     try {
+        $copy = $app.Presentations.Open($tmp, -1, 0, 0)                 # ReadOnly, Untitled no, no window
         if ($Notes) {
             $po = $copy.PrintOptions
-            $po.OutputType = 5; $po.PrintInBackground = 0; $po.ActivePrinter = "Microsoft Print to PDF"   # ppPrintOutputNotesPages
+            $po.OutputType = 5; $po.PrintInBackground = 0; $po.ActivePrinter = $PdfPrinter   # ppPrintOutputNotesPages
             $po.PrintHiddenSlides = 0; $po.PrintComments = 0       # as the slides PDF: no hidden slides, no comment pages
             $copy.PrintOut(1, $copy.Slides.Count, $outPdf, 1, 0)       # From, To, PrintToFile, Copies, Collate
         } else {
             $copy.SaveAs($outPdf, 32)                                    # ppSaveAsPDF
         }
     } finally {
-        Close-Deck ([pscustomobject]@{ App = $app; Deck = $copy; WasRunning = $true })
+        if ($copy) { Close-Deck ([pscustomobject]@{ App = $app; Deck = $copy; WasRunning = $true }) }
         Remove-Item -LiteralPath $tmp -Force
     }
     $f = Get-Item -LiteralPath $outPdf -ErrorAction SilentlyContinue

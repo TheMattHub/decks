@@ -240,6 +240,13 @@ function Invoke-ComChecks {
             "$($r -join ',')"
             ($r -notcontains $false) -and ($d.FullName -eq $wb) -and ($d.PrintOptions.OutputType -eq 2)
         }
+        Check "F4 Export-DeckPdf -Notes without the PDF printer: one clear line, nothing written" {
+            $PdfPrinter = "No Such Printer 7"           # shadows the helper's name for this block only
+            $f = Join-Path $work "noprinter.pdf"; $tmpBefore = @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Filter "deckpdf-*").Count
+            $r = Throws { Export-DeckPdf $d $f -Notes } "'No Such Printer 7' printer, which is not installed"
+            ($r -eq $true) -and -not (Test-Path $f) -and ($d.FullName -eq $wb) -and
+                (@(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Filter "deckpdf-*").Count -eq $tmpBefore)
+        }
     } finally { Close-Deck $s }
 }
 function Get-PngSize([string]$path) {
@@ -286,6 +293,25 @@ function Invoke-HandEditChecks {
 }
 Invoke-HandEditChecks
 
+Check "W-B a record written under the other shell gives no hand edits under this one" {
+    $other = if ($PSVersionTable.PSEdition -eq "Core") { "powershell.exe" } else { "pwsh" }
+    $f = Join-Path $work "shells.pptx"
+    $code = Join-Path $work "shells.ps1"
+    # 112.49999 is where the two shells' "{0:N0}" disagreed (113 against 112).
+    Set-Content -LiteralPath $code -Encoding ASCII -Value ($childHead + @'
+$s = New-DeckFromTemplate $a
+try { $sl = Add-LayoutSlide $s.Deck '^Blank$'; $x = Add-TextBox $sl 20 20 300 40 "Rounding" "Segoe UI" 20 "#000000"
+      $x.Left = [single]112.49999; $x.Width = [single]200.5; Save-Deck $s $b } finally { Close-Deck $s }
+'@)
+    $log = & $other -NoProfile -ExecutionPolicy Bypass -File $code $lib $tpl $f 2>&1
+    if ($LASTEXITCODE) { return "child failed: $($log -join ' ')" }
+    # The dumps themselves: Get-DeckHandEdits would stop at the unchanged file hash.
+    $was = @(Get-Content -LiteralPath (Join-Path $work "shells.dump.txt") -Encoding UTF8 | Select-Object -Skip 1)
+    $s = Open-Deck $f -ReadOnly; try { $now = @(Get-DeckDump $s.Deck) } finally { Close-Deck $s }
+    $e = @(Compare-Object $was $now -CaseSensitive | ForEach-Object { $_.SideIndicator + " " + $_.InputObject })
+    if ($e.Count) { $e -join ' | ' } else { @($now -match 'Rounding$') -join ''; $true }
+}
+
 # --- the example scripts, writing into temp ------------------------------------------------------------
 foreach ($ex in @(@("build_demo.ps1", "demo-deck.png", "1648x948", "layout-sheet.png", "1308x840", "equation-slide.png"),
                   @("build_marketing_demo.ps1", "marketing-deck.png", "1976x762", "marketing-cover.png"))) {
@@ -302,14 +328,52 @@ foreach ($ex in @(@("build_demo.ps1", "demo-deck.png", "1648x948", "layout-sheet
     }
 }
 
-Check "B08b `$PptxComVersion equals plugin.json's version" {
-    $PptxComVersion -eq (Get-Content -Raw (Join-Path $repo ".claude-plugin\plugin.json") | ConvertFrom-Json).version
+# --- G1, G2: a PowerPoint the helper did not start is never quit or stopped ------------------------------
+# Only when no PowerPoint ran before the test: the stand-in for the person's PowerPoint would otherwise be
+# the person's real one.
+function Invoke-GuardChecks {
+    Check "G2 Stop-PowerPoint stops the instance its own process started, unsaved work and all" {
+        [void](Wait-NoPowerPoint 15)         # the examples' PowerPoint may still be closing
+        $out = Invoke-Child ($childHead + @'
+$app = Get-PowerPointApp; $p = $app.Presentations.Add(0); [void]$p.Slides.Add(1, 12)
+$id = @(Get-Process POWERPNT)[0].Id
+Stop-PowerPoint
+if (Get-Process -Id $id -ErrorAction SilentlyContinue) { "running" } else { "stopped" }
+'@) @($lib)
+        $out -join ' '; ($out -join ' ') -eq "stopped"
+    }
+    if ((Wait-NoPowerPoint 15) -lt 0) { "FAIL  G1/G2 skipped: a PowerPoint is still running"; $script:failed++; return }
+    # The stand-in: a PowerPoint with a window, started before the helper attaches, on its start screen.
+    $person = New-Object -ComObject PowerPoint.Application
+    $person.Visible = -1
+    $draft = $null
+    try {
+        Check "G1 Close-Deck leaves running a PowerPoint the helper did not start, even on its start screen" {
+            $s = Open-Deck $base -ReadOnly; $was = $s.WasRunning; Close-Deck $s
+            Start-Sleep -Seconds 2
+            $was -and (@(Get-Process POWERPNT -ErrorAction SilentlyContinue).Count -eq 1) -and ($person.Presentations.Count -eq 0)
+        }
+        $draft = $person.Presentations.Add(-1); [void]$draft.Slides.Add(1, 12)
+        Check "G2 Stop-PowerPoint throws for the person's PowerPoint, naming the unsaved presentation, and leaves it" {
+            $r = Throws { Stop-PowerPoint } ("unsaved changes in " + [regex]::Escape($draft.FullName))
+            $r; ($r -eq $true) -and ($draft.Slides.Count -eq 1)
+        }
+    } finally {
+        if ($draft) { $draft.Close(); [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($draft) }
+        $person.Quit(); [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($person)
+        $draft = $null; $person = $null
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+    }
 }
+if (-not $ownPowerPoint) { Invoke-GuardChecks }
+
 
 # --- the end: no PowerPoint left, nothing written outside temp ------------------------------------------
 [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
 if (-not $ownPowerPoint) {
     Check "no PowerPoint process left" { $t = Wait-NoPowerPoint 15; if ($t -ge 0) { "after $t s"; $true } else { "still running after 15 s" } }
+    # Never Stop-Process: Stop-PowerPoint refuses when the instance has a window or unsaved work.
+    if (@(Get-Process POWERPNT -ErrorAction SilentlyContinue).Count) { try { Stop-PowerPoint } catch { "NOTE  " + $_.Exception.Message } }
 }
 Check "nothing written in the repository" { $now = git -C $repo status --porcelain; (($now -join "`n") -eq ($repoBefore -join "`n")) }
 if ($script:failed) { "$script:failed check(s) failed"; exit 1 }
