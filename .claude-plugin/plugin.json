@@ -1,6 +1,7 @@
 {
   "name": "decks",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "icon": "./.claude-plugin/icon.png",
   "description": "Make presentations: brief and structure by kind, design in Claude Slides, finish and edit natively in PowerPoint, build on company templates or generate templates from a look.",
   "author": { "name": "Matteo Brunetti" },
   "homepage": "https://github.com/TheMattHub/decks",

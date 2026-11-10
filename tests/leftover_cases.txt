@@ -1,0 +1,20 @@
+hit	Lorem ipsum dolor sit amet
+hit	TODO check the number with finance
+hit	Revenue TBD
+hit	[insert chart here]
+hit	[placeholder] card 1 title
+hit	Click to add text
+hit	Made with Claude
+hit	Variant B
+hit	Option A
+hit	C:\Users\ana\deck\numbers.csv
+hit	see build_figures.py
+hit	[€__]
+hit	[TOTAL __]
+ok	Source: Eurostat, 2025
+ok	Four depots reach their bound with 17 trucks
+ok	Options for the northern depot
+ok	Todos los caminos
+ok	An optional step
+ok	The MD signs off
+ok	e.g. 3.5 kg lighter
