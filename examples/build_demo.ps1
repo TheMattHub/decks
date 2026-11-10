@@ -1,10 +1,11 @@
 # Builds the README images from fictional content only: a template generated from a palette, a short deck
 # on it (native text, a big-number row, an equation), the deck rendered, and the template's layout sheet.
-# Needs Windows with PowerPoint and uv. Run: pwsh -File examples\build_demo.ps1
+# Needs Windows with PowerPoint and uv. Run: pwsh -File examples\build_demo.ps1 [-Out folder]
+param([string]$Out)     # where the images go; docs\screenshots by default
 $ErrorActionPreference = "Stop"
 $skill = Join-Path $PSScriptRoot "..\skills\making-presentations"
 . (Join-Path $skill "scripts\PptxCom.ps1")
-$out = Join-Path $PSScriptRoot "..\docs\screenshots"
+if (-not $Out) { $Out = Join-Path $PSScriptRoot "..\docs\screenshots" }
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "decks-demo"
 New-Item -ItemType Directory -Force $out, $work | Out-Null
 $out = (Resolve-Path $out).Path
@@ -58,18 +59,7 @@ $s = Open-Deck $tpl -ReadOnly
 try { Export-LayoutSheet $s.Deck (Join-Path $out "layout-sheet.png") 3 420 } finally { Close-Deck $s }
 
 # 5. The deck as a 2 x 2 hero image.
-Add-Type -AssemblyName System.Drawing
-$pngs = @(Get-ChildItem (Join-Path $work "png") -Filter *.png | Sort-Object Name)
-$w = 800; $h = 450; $gap = 16
-$sheet = New-Object System.Drawing.Bitmap (2 * $w + 3 * $gap), (2 * $h + 3 * $gap)
-$g = [System.Drawing.Graphics]::FromImage($sheet)
-$g.Clear([System.Drawing.Color]::FromArgb(230, 225, 214))
-$g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-for ($i = 0; $i -lt [math]::Min(4, $pngs.Count); $i++) {
-    $img = [System.Drawing.Image]::FromFile($pngs[$i].FullName)
-    $g.DrawImage($img, $gap + ($i % 2) * ($w + $gap), $gap + [math]::Floor($i / 2) * ($h + $gap), $w, $h)
-    $img.Dispose()
-}
-$g.Dispose(); $sheet.Save((Join-Path $out "demo-deck.png")); $sheet.Dispose()
+$pngs = @(Get-ChildItem (Join-Path $work "png") -Filter *.png | Sort-Object Name | Select-Object -First 4 | ForEach-Object { $_.FullName })
+Write-TileSheet $pngs (Join-Path $out "demo-deck.png") 2 800 450 16 -background "#E6E1D6"
 Copy-Item (Join-Path $work "png\slide03.png") (Join-Path $out "equation-slide.png") -Force
 "images in $out"

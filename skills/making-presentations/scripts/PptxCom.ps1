@@ -505,7 +505,6 @@ function Test-DeckLeftovers($deck, [string[]]$extraPatterns, [string[]]$exclude)
 # showing its kind name. Uses temporary slides on $deck and deletes them, so a -ReadOnly deck works.
 function Export-LayoutSheet($deck, [string]$outPng, $columns = 3, $thumbWidth = 480) {
     $outPng = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outPng)   # absolute, so a bare file name has a parent folder
-    Add-Type -AssemblyName System.Drawing
     $w = [int]$thumbWidth; $h = [int]($w * $deck.PageSetup.SlideHeight / $deck.PageSetup.SlideWidth)
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("layoutsheet-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force $tmp | Out-Null
@@ -527,24 +526,83 @@ function Export-LayoutSheet($deck, [string]$outPng, $columns = 3, $thumbWidth = 
                 } finally { $slide.Delete() }
             }
         }
+        Write-TileSheet @($items | ForEach-Object { $_.File }) $outPng $columns $w $h 12 @($items | ForEach-Object { $_.Label })
     } finally {
         while ($deck.Slides.Count -gt $before) { $deck.Slides.Item($deck.Slides.Count).Delete() }
+        Remove-Item -Recurse -Force $tmp
     }
-    $labelH = 28; $gap = 12
-    $rows = [math]::Ceiling($items.Count / $columns)
+}
+
+# Every slide as a thumbnail on one PNG sheet, labelled with its number and "(hidden)" for a hidden slide:
+# the whole deck at a glance.
+function Export-ContactSheet($deck, [string]$outPng, $columns = 4, $thumbWidth = 480) {
+    $outPng = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outPng)
+    $w = [int]$thumbWidth; $h = [int]($w * $deck.PageSetup.SlideHeight / $deck.PageSetup.SlideWidth)
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("contactsheet-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force $tmp | Out-Null
+    try {
+        $files = @(); $labels = @()
+        foreach ($s in @($deck.Slides)) {
+            $files += Join-Path $tmp ("s{0:D4}.png" -f $s.SlideIndex)
+            $s.Export($files[-1], "PNG", $w, $h)
+            $labels += [string]$s.SlideIndex + $(if ($s.SlideShowTransition.Hidden -eq -1) { " (hidden)" })
+        }
+        Write-TileSheet $files $outPng $columns $w $h 12 $labels
+    } finally { Remove-Item -Recurse -Force $tmp }
+}
+
+# Internal: draws PNG files as $w x $h tiles, $columns across, $gap apart, on a $background ("#RRGGBB")
+# sheet. With $labels, each tile gets a thin frame and its label underneath. Shared by Export-LayoutSheet,
+# Export-ContactSheet and the example scripts (which pass no labels).
+function Write-TileSheet([string[]]$files, [string]$outPng, $columns, $w, $h, $gap = 12, [string[]]$labels, [string]$background = "#FFFFFF") {
+    Add-Type -AssemblyName System.Drawing
+    $labelH = if ($labels) { 28 } else { 0 }
+    $rows = [math]::Ceiling($files.Count / $columns)
     $bmp = New-Object System.Drawing.Bitmap ([int]($columns * ($w + $gap) + $gap)), ([int]($rows * ($h + $labelH + $gap) + $gap))
     $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $font = New-Object System.Drawing.Font("Segoe UI", 11)
     try {
-        $g.Clear([System.Drawing.Color]::White)
-        $font = New-Object System.Drawing.Font("Segoe UI", 11)
-        for ($i = 0; $i -lt $items.Count; $i++) {
+        $g.Clear([System.Drawing.ColorTranslator]::FromHtml($background))
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        for ($i = 0; $i -lt $files.Count; $i++) {
             $x = $gap + ($i % $columns) * ($w + $gap); $y = $gap + [math]::Floor($i / $columns) * ($h + $labelH + $gap)
-            $img = [System.Drawing.Image]::FromFile($items[$i].File)
-            try { $g.DrawImage($img, [int]$x, [int]$y, $w, $h) } finally { $img.Dispose() }
-            $g.DrawRectangle([System.Drawing.Pens]::LightGray, [int]$x, [int]$y, $w, $h)
-            $g.DrawString($items[$i].Label, $font, [System.Drawing.Brushes]::Black, [single]$x, [single]($y + $h + 4))
+            $img = [System.Drawing.Image]::FromFile($files[$i])
+            try { $g.DrawImage($img, [int]$x, [int]$y, [int]$w, [int]$h) } finally { $img.Dispose() }
+            if ($labels) {
+                $g.DrawRectangle([System.Drawing.Pens]::LightGray, [int]$x, [int]$y, [int]$w, [int]$h)
+                $g.DrawString($labels[$i], $font, [System.Drawing.Brushes]::Black, [single]$x, [single]($y + $h + 4))
+            }
         }
         New-Item -ItemType Directory -Force (Split-Path -Parent $outPng) | Out-Null
         $bmp.Save($outPng, [System.Drawing.Imaging.ImageFormat]::Png)
-    } finally { $g.Dispose(); $bmp.Dispose(); Remove-Item -Recurse -Force $tmp }
+    } finally { $font.Dispose(); $g.Dispose(); $bmp.Dispose() }
+}
+
+# The deck as a PDF: one page per slide, or with -Notes each slide with its speaker notes (the version to
+# read alone, from the same source). Hidden slides are left out. The deck itself is not changed.
+function Export-DeckPdf($deck, [string]$outPdf, [switch]$Notes) {
+    $outPdf = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outPdf)
+    # Works on a throwaway copy: PowerPoint writes only the first PDF saved from an open deck (later saves
+    # return without writing), a PDF save ignores PrintOptions.OutputType, and ExportAsFixedFormat fails
+    # under late binding. Notes pages therefore go through the "Microsoft Print to PDF" printer.
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("deckpdf-" + [guid]::NewGuid().ToString("N") + ".pptx")
+    $deck.SaveCopyAs($tmp)
+    $start = Get-Date
+    $app = $deck.Application
+    $copy = $app.Presentations.Open($tmp, -1, 0, 0)                     # ReadOnly, Untitled no, no window
+    try {
+        if ($Notes) {
+            $po = $copy.PrintOptions
+            $po.OutputType = 5; $po.PrintInBackground = 0; $po.ActivePrinter = "Microsoft Print to PDF"   # ppPrintOutputNotesPages
+            $po.PrintHiddenSlides = 0; $po.PrintComments = 0       # as the slides PDF: no hidden slides, no comment pages
+            $copy.PrintOut(1, $copy.Slides.Count, $outPdf, 1, 0)       # From, To, PrintToFile, Copies, Collate
+        } else {
+            $copy.SaveAs($outPdf, 32)                                    # ppSaveAsPDF
+        }
+    } finally {
+        Close-Deck ([pscustomobject]@{ App = $app; Deck = $copy; WasRunning = $true })
+        Remove-Item -LiteralPath $tmp -Force
+    }
+    $f = Get-Item -LiteralPath $outPdf -ErrorAction SilentlyContinue
+    if (-not $f -or $f.LastWriteTime -lt $start.AddSeconds(-1)) { throw "Export-DeckPdf: $outPdf was not written" }
 }

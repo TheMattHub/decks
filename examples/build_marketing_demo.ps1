@@ -1,10 +1,11 @@
 # Builds the marketing demo from fictional content only: generated illustrations, a warm template generated
 # from a palette, and a six-slide image-led campaign deck for "Northern Trails", an invented outdoor brand.
-# Needs Windows with PowerPoint and uv. Run: pwsh -File examples\build_marketing_demo.ps1
+# Needs Windows with PowerPoint and uv. Run: pwsh -File examples\build_marketing_demo.ps1 [-Out folder]
+param([string]$Out)     # where the images go; docs\screenshots by default
 $ErrorActionPreference = "Stop"
 $skill = Join-Path $PSScriptRoot "..\skills\making-presentations"
 . (Join-Path $skill "scripts\PptxCom.ps1")
-$out = Join-Path $PSScriptRoot "..\docs\screenshots"
+if (-not $Out) { $Out = Join-Path $PSScriptRoot "..\docs\screenshots" }
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "decks-demo-marketing"
 $art = Join-Path $work "art"
 New-Item -ItemType Directory -Force $out, $work | Out-Null
@@ -98,18 +99,7 @@ try {
 } finally { Close-Deck $s }
 
 # A 3 x 2 sheet of the six slides for the README.
-Add-Type -AssemblyName System.Drawing
-$pngs = @(Get-ChildItem (Join-Path $work "png") -Filter *.png | Sort-Object Name)
-$w = 640; $h = 360; $gap = 14
-$sheet = New-Object System.Drawing.Bitmap (3 * $w + 4 * $gap), (2 * $h + 3 * $gap)
-$g = [System.Drawing.Graphics]::FromImage($sheet)
-$g.Clear([System.Drawing.Color]::FromArgb(233, 223, 209))
-$g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-for ($i = 0; $i -lt [math]::Min(6, $pngs.Count); $i++) {
-    $img = [System.Drawing.Image]::FromFile($pngs[$i].FullName)
-    $g.DrawImage($img, $gap + ($i % 3) * ($w + $gap), $gap + [math]::Floor($i / 3) * ($h + $gap), $w, $h)
-    $img.Dispose()
-}
-$g.Dispose(); $sheet.Save((Join-Path $out "marketing-deck.png")); $sheet.Dispose()
+$pngs = @(Get-ChildItem (Join-Path $work "png") -Filter *.png | Sort-Object Name | Select-Object -First 6 | ForEach-Object { $_.FullName })
+Write-TileSheet $pngs (Join-Path $out "marketing-deck.png") 3 640 360 14 -background $sand
 Copy-Item (Join-Path $work "png\slide01.png") (Join-Path $out "marketing-cover.png") -Force
 "images in $out"
