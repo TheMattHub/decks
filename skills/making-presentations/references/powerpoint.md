@@ -17,8 +17,8 @@
 |---|---|
 | `Open-Deck path [-ReadOnly]` | Open without a window. Read-write mode refuses while another program holds the file, and backs it up first (same extension). Retries for up to 20 s while a previous PowerPoint is still closing |
 | `Save-Deck s [path]` | Saves with fonts embedded. Throws when the file was not written (a hidden dialog), warns per font that cannot be embedded, and writes the record `<name>.dump.txt` (hash, then the dump) beside a .pptx |
-| `Close-Deck s` | Closes and releases PowerPoint, so a windowless one exits within seconds. Quits PowerPoint only when this process started it and no presentation is left |
-| `Stop-PowerPoint` | Ends a hung PowerPoint only when this process started it, or when it has no window and no unsaved presentation; otherwise throws, naming them. Never `Stop-Process POWERPNT` yourself |
+| `Close-Deck s` | Closes and releases PowerPoint, so a windowless one exits within seconds. Quits PowerPoint only when this process started it, no presentation is left and it has no visible window |
+| `Stop-PowerPoint` | Ends a hung PowerPoint only when it has no visible window and, unless this process started it, no unsaved presentation; otherwise throws, naming what it found. Never `Stop-Process POWERPNT` yourself |
 | `Find-Slide deck regex`, `Find-Shape slide regex`, `Get-Picture slide` | Find slides and shapes by text, inside groups and table cells too |
 | `Edit-DeckText deck-or-slide old new` | Replaces the one literal, case-sensitive occurrence and keeps the run formatting (assigning `.Text` loses a bold word). Throws when it is missing (already applied, or changed by hand) or occurs more than once (names the slides) |
 | `Set-Notes`, `Add-TextBox`, `Set-FitInto`, `Set-SwapPicture` | Notes, a fixed text box (colour as "#RRGGBB"), fit into a frame, swap a picture in its box |
@@ -29,11 +29,11 @@
 | `Export-ContactSheet deck out.png [cols] [thumbWidth]` | Every slide as a numbered thumbnail on one PNG, hidden slides marked: one image to triage a deck |
 | `Export-DeckPdf deck out.pdf [-Notes]` | PDF of the shown slides; `-Notes` gives notes pages (slide plus notes: the read-alone version from the same source) through the "Microsoft Print to PDF" printer. The deck is untouched |
 | `Test-DeckLeftovers deck [extra regexes] [exclude regexes]` | List of leftovers (placeholders, TODO, option labels, file paths) in shapes, groups, tables and notes, plus one `comments` entry per slide with review comments, as Slide, Where, Match, Text. An exclude regex drops a hit whose text matches. Prints nothing |
-| `Test-DeckLayout deck [minPt]` | Layout findings as Slide, Where, Check, Detail: `small-text` (under 12 pt on a 960 pt slide), `overflow` (text taller than its fixed box), `off-slide`, `font` (cannot be embedded). Prints nothing |
+| `Test-DeckLayout deck [minPt]` | Layout findings as Slide, Where, Check, Detail: `small-text` (under 12 pt on a 960 pt slide), `overflow` (text taller than a box that does not grow, shrink-on-overflow included), `off-slide` (pictures skipped: a crop may bleed on purpose), `font` (cannot be embedded). Prints nothing |
 | `Export-LayoutSheet deck out.png [cols] [thumbWidth]` | One PNG of every layout as a labelled thumbnail with each slot named. Works on a template opened `-ReadOnly`: temporary slides are added and deleted, the deck is never saved. Read it with `Get-TemplateProfile` |
 | `Get-DeckDump deck` / `Write-DeckDump deck file` | Text dump of shapes, boxes, text (with the first run's font and size), notes and effects |
 | `Get-DeckHandEdits s` | What a person changed since the last `Save-Deck`: nothing when the file matches its record, else the dump lines that differ (`- ` recorded, `+ ` now). Throws when there is no record |
-| `Invoke-FinishManifest deck manifest.json [mediaDir]` | Applies a `slides_manifest.py` manifest (transitions, build-ins, videos) to a Slides export. Checks everything first; throws once listing every problem and changes nothing. Run once per export |
+| `Invoke-FinishManifest deck manifest.json [mediaDir]` | Applies a `slides_manifest.py` manifest (transitions, build-ins, videos) to a Slides export. Checks everything first and throws once listing every problem, changing nothing; videos go in first, and if PowerPoint cannot read one, those added are removed. Run once per export |
 | `Get-DeckTemplatePath name [-Library]` | Path of a template registered in `~/.claude/decks.json`; `-Library` gives its registered slide library, and throws when there is none |
 | `Get-TemplateProfile deck` | Markdown list of layouts, placeholders, theme colours and fonts |
 | `New-DeckFromTemplate file [-KeepSlides]`, `Add-LayoutSlide deck regex` | A new, unsaved deck from a .pptx or .potx, without its sample slides (`-KeepSlides` keeps them, for a slide library); a slide on a named layout |
@@ -102,7 +102,8 @@ with `Add-Video`: the current Slides release does not write them.
 - **Busy PowerPoint**: `RPC_E_CALL_REJECTED` or "RPC server unavailable" means PowerPoint is still
   closing. The functions that start PowerPoint retry for up to 20 s, so this should no longer reach a script.
 - **The person's PowerPoint**: PowerPoint is one instance per Windows session, so a script shares it with
-  the decks the person has open. The helpers never quit or stop an instance they did not start. For a hung
+  the decks the person has open. A person who opens PowerPoint while a script runs joins the script's instance, so the helpers never quit or
+  stop an instance that has a window, or one they did not start. For a hung
   one use `Stop-PowerPoint`, which refuses while there is unsaved work or a visible window; then tell the
   person instead of forcing it.
 - **Hidden dialogs**: a font-embedding dialog can block a windowless save. `Save-Deck` throws when the file

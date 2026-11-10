@@ -79,7 +79,7 @@ Functions, recipes and gotchas: `references/powerpoint.md`.
   numbered in-place rounds (`slides/edits_N.ps1`) that change text with `Edit-DeckText` (it keeps hand
   formatting and refuses to run twice) and back up first; see "Hand edits" in the reference.
 - **The person's PowerPoint**: scripts share the one PowerPoint with the decks the person has open. Never
-  `Stop-Process POWERPNT`; a hung one goes through `Stop-PowerPoint`, which refuses while work is unsaved.
+  `Stop-Process POWERPNT`; a hung one goes through `Stop-PowerPoint`, which refuses while it has a window or unsaved work.
 
 ## 5. Templates
 

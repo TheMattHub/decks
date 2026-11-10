@@ -19,6 +19,9 @@ November 2026 review, all merged on the branch. Not pushed. Next: see the last l
 | B08 | Stale PNGs after `Export-SlidePngs`; header comment and version stamp; `icon` not in plugin.json | fixed |
 | B09 | `Add-TextBox` with a whole-number size, then a fractional one, fails "Unable to cast" | fixed: `[single]` |
 | B10 | A PowerPoint on its start screen counted as the script's own and was quit | fixed: ownership by process |
+| B11 | `Stop-PowerPoint` and `Close-Deck` could end a PowerPoint a person had joined (single instance) | fixed: never with a visible window |
+| B12 | Builds on multi-block elements never matched the export; the applier was not all-or-nothing | fixed |
+| B13 | `Test-DeckLayout` missed overflow in shrink-on-overflow placeholders | fixed |
 
 ## Work items
 
@@ -51,4 +54,6 @@ November 2026 review, all merged on the branch. Not pushed. Next: see the last l
 - 2026-11-10: wave 1 merged (PptxCom hardening, `pptx_media.py`, `pptx_check.py`, `slides_manifest.py`);
   checkpoint review: 8 must-fix and 6 minor findings, all reproduced by a failing test and fixed.
 - 2026-11-10: wave 2 merged (guards, `Test-DeckLayout`, starter library, manifest applier); docs written.
-  NEXT: final whole-branch review, one fix pass, then the user decides on merge to main, push and release.
+- 2026-11-10: final whole-branch review: 4 must-fix and 7 minor findings, each reproduced by running it;
+  one fix pass (B11-B13 and the minor ones); docs corrected where the review proved them false.
+  NEXT: the user decides on merge to main, push and release (the marketplace name question is open).
