@@ -62,4 +62,34 @@ try { Export-LayoutSheet $s.Deck (Join-Path $out "layout-sheet.png") 3 420 } fin
 $pngs = @(Get-ChildItem (Join-Path $work "png") -Filter *.png | Sort-Object Name | Select-Object -First 4 | ForEach-Object { $_.FullName })
 Write-TileSheet $pngs (Join-Path $out "demo-deck.png") 2 800 450 16 -background "#E6E1D6"
 Copy-Item (Join-Path $work "png\slide03.png") (Join-Path $out "equation-slide.png") -Force
+
+# 6. The same template with a starter library: designed pattern slides, a deck built by copying them and
+#    replacing their sample texts (the keys are regexes on those texts), shown as a contact sheet.
+$lib = Join-Path $work "Northwind library.pptx"
+New-StarterLibrary $tpl $lib | Out-Null
+$s = New-DeckFromTemplate $lib -KeepSlides
+try {
+    $d = $s.Deck
+    [void](Add-FromLibrary $d "cover" @{ 'Deck title' = "Fewer trucks, same day"; 'Subtitle' = "Northwind Freight - fleet study, a fictional example" })
+    [void](Add-FromLibrary $d "big-numbers" @{ 'Slide title' = "Seventeen trucks carry every parcel"
+        '\] 38%' = "17"; 'number one counts' = "trucks instead of 21"
+        '\] 120' = "312"; 'number two counts' = "minutes on the longest route"
+        '\] 4$' = "4"; 'number three counts' = "depots at their lower bound" })
+    [void](Add-FromLibrary $d "cards" @{ 'Slide title' = "Three changes make it work"
+        'Card one$' = "Routes"; 'card one says' = "Parcels are grouped by street, not by order time."
+        'Card two$' = "Loading"; 'card two says' = "Trucks are loaded in reverse drop order."
+        'Card three$' = "Shifts"; 'card three says' = "Two late starts cover the evening peak." })
+    [void](Add-FromLibrary $d "section" @{ 'Section title' = "How we tested it"; 'Part 1' = "Part 2 - four weeks on the northern depot" })
+    [void](Add-FromLibrary $d "quote" @{ 'A sentence' = "We finally know which truck arrives when."; 'Name, role' = "Ana, depot planner (fictional)" })
+    [void](Add-FromLibrary $d "timeline" @{ 'Plan in four' = "Roll-out in four steps"
+        'Step one$' = "March"; 'in step one' = "Pilot on the northern depot."
+        'Step two$' = "April"; 'in step two' = "Driver training, two depots."
+        'Step three$' = "May"; 'in step three' = "All four depots switch."
+        'Step four$' = "June"; 'in step four' = "Review against the 17-truck plan." })
+    [void](Add-FromLibrary $d "closing" @{ 'The ask' = "Approve the pilot in March"; 'Next step' = "Next step - Ana, ana@northwind.example" })
+    Remove-LibrarySlides $d
+    $left = @(Test-DeckLeftovers $d) + @(Test-DeckLayout $d)
+    if ($left.Count) { throw "the library deck has findings: " + (($left | ForEach-Object { "$($_.Slide) $($_.Where)" }) -join "; ") }
+    Export-ContactSheet $d (Join-Path $out "starter-library.png") 4 480
+} finally { Close-Deck $s }
 "images in $out"

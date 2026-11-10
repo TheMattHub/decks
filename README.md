@@ -49,7 +49,26 @@ Two fictional decks in two styles, both rebuilt from scripts in [`examples/`](ex
 <br><sub><b>Layout sheet</b>: every layout of a template, slots named</sub>
 </td>
 </tr>
+<tr>
+<td colspan="2" valign="top" align="center">
+<a href="docs/screenshots/starter-library.png"><img src="docs/screenshots/starter-library.png" alt="Contact sheet of seven slides built from the starter library of a generated template: cover, big numbers, three cards, section, quote, timeline and closing, numbered" width="100%"></a>
+<br><sub><b>Starter library</b>: a template generated from a palette gets designed pattern slides; a deck is built by copying them and replacing their text. Shown as a contact sheet.</sub>
+</td>
+</tr>
 </table>
+
+The review starts with scripts. `pptx_check.py` on the consultancy deck above, with its numbers file, a five-minute slot and a budget of three main slides (font list abridged):
+
+```text
+slides: 3 main, 1 backup
+hidden: none
+embedded fonts: ppt/fonts/font1.fntdata, ... (9 files)
+title: ''  author: 'Matteo Brunetti'  last modified by: 'Matteo Brunetti'
+slide 1  timing  notes do not start with a start time (m:ss.)
+slide 3  timing  notes do not start with a start time (m:ss.)
+```
+
+Every number on the slides is in the numbers file and the deck is within budget; two slides still lack a start time in their notes, and the empty title in the document properties is worth filling before the deck goes out.
 
 ## Install
 
@@ -96,7 +115,7 @@ Ask for a presentation, a shorter version of one, or changes to a deck. The skil
 | `scripts/slides_manifest.py` | Transitions and build-ins read from a Claude Slides deck's files, for the finishing step |
 | `scripts/pptx_equations.py` | `$$latex$$` paragraphs in a .pptx to native, editable equations |
 
-The logo is drawn by `docs/logo/build_logo.py` (mark, icons, avatar and social preview). `examples/build_marketing_demo.ps1` and `examples/build_demo.ps1` build the example templates, decks and the images above from fictional content; `examples/make_art.py` draws the illustrations.
+The logo is drawn by `docs/logo/build_logo.py` (mark, icons, avatar and social preview). `examples/build_marketing_demo.ps1` and `examples/build_demo.ps1` build the example templates, decks, the starter library and the images above from fictional content; `examples/make_art.py` draws the illustrations.
 
 ## Contributing
 
