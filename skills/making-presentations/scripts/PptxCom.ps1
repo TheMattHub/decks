@@ -547,6 +547,46 @@ function Test-DeckLeftovers($deck, [string[]]$extraPatterns, [string[]]$exclude)
     }
 }
 
+# Layout faults, as a list of {Slide; Where; Check; Detail}; prints nothing. $minPt is for a 960 pt wide
+# slide and scales with the slide's width. Checks: small-text (a run under the minimum; date, footer and
+# slide-number placeholders are skipped), overflow (a fixed-size frame whose text is over 2 pt taller than
+# the shape; table rows grow, so cells are skipped), off-slide (a top-level unrotated shape leaving the slide
+# by over 1 pt), font (a deck font that cannot be embedded: Slide 0, Where "deck").
+function Test-DeckLayout($deck, $minPt = 12) {
+    $W = $deck.PageSetup.SlideWidth; $H = $deck.PageSetup.SlideHeight
+    $min = $minPt * $W / 960
+    foreach ($s in @($deck.Slides)) {
+        foreach ($sh in @($s.Shapes)) {
+            if ($sh.Rotation -eq 0 -and ($sh.Left -lt -1 -or $sh.Top -lt -1 -or $sh.Left + $sh.Width -gt $W + 1 -or $sh.Top + $sh.Height -gt $H + 1)) {
+                [pscustomobject]@{ Slide = $s.SlideIndex; Where = "shape " + $sh.Name; Check = "off-slide"
+                    Detail = "{0:N0},{1:N0} {2:N0}x{3:N0} on a {4:N0}x{5:N0} slide" -f $sh.Left, $sh.Top, $sh.Width, $sh.Height, $W, $H }
+            }
+            if ($sh.Type -eq 14 -and @(13, 15, 16) -contains $sh.PlaceholderFormat.Type) { continue }   # date, footer, slide number
+            foreach ($it in @(Get-ShapeTextItems $sh)) {
+                $r = $it.Shape.TextFrame.TextRange
+                if (-not $r.Text.Trim()) { continue }
+                # COM gives each run's effective size, inherited ones included.
+                $small = @(for ($i = 1; $i -le $r.Runs().Count; $i++) {
+                    $run = $r.Runs($i); if ($run.Text.Trim() -and $run.Font.Size -lt $min) { $run.Font.Size }
+                })
+                $t = $r.Text -replace "[\r\n\v]+", " / "; $t = $t.Substring(0, [math]::Min(40, $t.Length))
+                if ($small.Count) {
+                    [pscustomobject]@{ Slide = $s.SlideIndex; Where = "shape " + $it.Name; Check = "small-text"
+                        Detail = "{0} pt under {1:0.#} pt: {2}" -f ($small | Measure-Object -Minimum).Minimum, $min, $t }
+                }
+                # BoundHeight is measured on the slide, so a rotated shape's text looks taller than it is: skipped.
+                if (-not $sh.HasTable -and $it.Shape.Rotation -eq 0 -and $it.Shape.TextFrame.AutoSize -eq 0 -and $r.BoundHeight -gt $it.Shape.Height + 2) {
+                    [pscustomobject]@{ Slide = $s.SlideIndex; Where = "shape " + $it.Name; Check = "overflow"
+                        Detail = "text {0:N0} pt tall in a {1:N0} pt box: {2}" -f $r.BoundHeight, $it.Shape.Height, $t }
+                }
+            }
+        }
+    }
+    foreach ($font in @($deck.Fonts)) {
+        if ($font.Embeddable -eq 0) { [pscustomobject]@{ Slide = 0; Where = "deck"; Check = "font"; Detail = "'$($font.Name)' cannot be embedded" } }
+    }
+}
+
 # One PNG sheet with a labelled thumbnail ("design / layout") of every custom layout, each empty slot
 # showing its kind name. Uses temporary slides on $deck and deletes them, so a -ReadOnly deck works.
 function Export-LayoutSheet($deck, [string]$outPng, $columns = 3, $thumbWidth = 480) {

@@ -293,6 +293,44 @@ function Invoke-HandEditChecks {
 }
 Invoke-HandEditChecks
 
+# --- W-A: Test-DeckLayout ------------------------------------------------------------------------------
+function Invoke-LayoutChecks {
+    $s = New-DeckFromTemplate $tpl
+    try {
+        $d = $s.Deck
+        $ok = Add-LayoutSlide $d '^Blank$'
+        [void](Add-TextBox $ok 0 0 960 540 "Full slide, 12 pt" "Segoe UI" 12 "#000000")
+        $t = $ok.Shapes.AddTable(1, 1, 20, 100, 300, 20)
+        $t.Table.Cell(1, 1).Shape.TextFrame.TextRange.Text = ("A cell grows with its text. " * 6)
+        $rot = Add-TextBox $ok 800 100 300 40 "Rotated past the edge" "Segoe UI" 14 "#000000"; $rot.Rotation = 30
+        $bad = Add-LayoutSlide $d '^Blank$'
+        $small = Add-TextBox $bad 20 20 300 40 "Fine " "Segoe UI" 14 "#000000"
+        $small.TextFrame.TextRange.InsertAfter("tiny").Font.Size = 10
+        $over = Add-TextBox $bad 20 100 200 60 ("Too much text for this box. " * 12) "Segoe UI" 14 "#000000"
+        $off = Add-TextBox $bad -10 300 200 40 "Off the left" "Segoe UI" 14 "#000000"
+        $f = @(Test-DeckLayout $d)
+        Check "W-A nothing on a clean slide (full-bleed box, growing table cell, rotated shape)" {
+            $x = @($f | Where-Object { $_.Slide -eq $ok.SlideIndex }); if ($x.Count) { ($x | ForEach-Object { "$($_.Check) $($_.Where) $($_.Detail)" }) -join '; ' } else { $true }
+        }
+        Check "W-A small-text, overflow and off-slide, one each" {
+            $x = @($f | Where-Object { $_.Slide -eq $bad.SlideIndex })
+            ($x | ForEach-Object { "$($_.Check): $($_.Detail)" }) -join '; '
+            ($x.Count -eq 3) -and [bool]@($x | Where-Object { $_.Check -eq "small-text" -and $_.Where -eq "shape " + $small.Name }).Count -and
+                [bool]@($x | Where-Object { $_.Check -eq "overflow" -and $_.Where -eq "shape " + $over.Name }).Count -and
+                [bool]@($x | Where-Object { $_.Check -eq "off-slide" -and $_.Where -eq "shape " + $off.Name }).Count
+        }
+        Check "W-A the minimum scales with the slide width" {
+            # COM leaves text sizes as they are when the slide grows: at 1920 pt, 6 means 12 and 7 means 14.
+            $d.PageSetup.SlideWidth = 1920; $d.PageSetup.SlideHeight = 1080
+            $x = @(Test-DeckLayout $d 6 | Where-Object { $_.Check -eq "small-text" })     # the 10 pt run
+            $y = @(Test-DeckLayout $d 7 | Where-Object { $_.Check -eq "small-text" })     # and the 12 pt box
+            "6: " + (($x | ForEach-Object { $_.Detail }) -join ', ') + "; 7: " + (($y | ForEach-Object { $_.Detail }) -join ', ')
+            ($x.Count -eq 1) -and ($y.Count -eq 2)
+        }
+    } finally { Close-Deck $s }
+}
+Invoke-LayoutChecks
+
 Check "W-B a record written under the other shell gives no hand edits under this one" {
     $other = if ($PSVersionTable.PSEdition -eq "Core") { "powershell.exe" } else { "pwsh" }
     $f = Join-Path $work "shells.pptx"
