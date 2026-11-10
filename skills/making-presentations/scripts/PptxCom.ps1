@@ -1,13 +1,16 @@
 # Helpers for finishing and editing a .pptx with PowerPoint itself (COM, Windows), so every video,
-# transition, build-in and embedded font is native. Dot-source it from a deck script:
+# transition, build-in and embedded font is native. Copy it into the project's slides/ folder and
+# dot-source it from a deck script there:
 #
-#   . "$env:USERPROFILE\.claude\skills\making-presentations\scripts\PptxCom.ps1"
-#   $s = Open-Deck "C:\talk\deck.pptx"              # read-write: refuses if the file is open, backs it up first
+#   . "$PSScriptRoot\PptxCom.ps1"
+#   $s = Open-Deck "$PSScriptRoot\deck.pptx"        # read-write: refuses if the file is open, backs it up first
 #   try { $slide = Find-Slide $s.Deck '^THE ANSWER$'; Set-Notes $slide "2:30. Say the number." ; Save-Deck $s }
 #   finally { Close-Deck $s }
 #
 # Keep this file ASCII: Windows PowerShell 5.1 reads a script without a BOM as ANSI, so write
 # non-ASCII text in deck scripts as [char]0x00B7 (middle dot) and the like.
+
+$PptxComVersion = "0.3.0"     # the plugin's version (tests/check_ps.ps1 keeps them equal)
 
 # PowerPoint enumerations the deck scripts use.
 $PpFade = 3849; $PpPushUp = 3848; $PpMorph = 3953          # ppEntryEffect (slide transitions)
@@ -33,10 +36,27 @@ function Open-Deck([string]$path, [switch]$ReadOnly) {
         Copy-Item -LiteralPath $path $bak
     }
     # Attaches to a running PowerPoint if there is one; Close-Deck leaves it running in that case.
-    $app = New-Object -ComObject PowerPoint.Application
+    $app = Get-PowerPointApp
     $wasRunning = $app.Presentations.Count -gt 0
     $deck = $app.Presentations.Open($path, [bool]$ReadOnly, $false, $false)   # ReadOnly, Untitled, WithWindow
     [pscustomobject]@{ App = $app; Deck = $deck; Path = $path; WasRunning = $wasRunning }
+}
+
+# The PowerPoint application. A PowerPoint still shutting down (the previous script just ended) rejects
+# calls for a few seconds, so retry for up to 20 s, creating the object again each time.
+function Get-PowerPointApp {
+    $deadline = (Get-Date).AddSeconds(20)
+    while ($true) {
+        try {
+            $app = New-Object -ComObject PowerPoint.Application
+            [void]$app.Presentations.Count       # the first call is the one a closing PowerPoint rejects
+            return $app
+        } catch {
+            $busy = $_.Exception.Message -match 'rejected|RPC server is unavailable|0x80010001|0x800706BA|0x80080005'
+            if (-not $busy -or (Get-Date) -gt $deadline) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 
 # Saves as .pptx with the fonts embedded (needs fonts whose licence allows embedding, e.g. OFL).
@@ -46,20 +66,68 @@ function Save-Deck($session, [string]$path) {
     $session.Deck.SaveAs($path, 24, -1)     # ppSaveAsOpenXMLPresentation, EmbedTrueTypeFonts
 }
 
+# Closes the deck and drops the session's COM references: PowerPoint, started windowless, stays alive while
+# any reference lives, and the runtime frees the intermediate ones only on a garbage collection.
 function Close-Deck($session) {
     $session.Deck.Close()
     if (-not $session.WasRunning -and $session.App.Presentations.Count -eq 0) { $session.App.Quit() }
+    [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($session.Deck)
+    # One release, not a final one: every session in this process shares one wrapper around the application.
+    [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($session.App)
+    $session.Deck = $null; $session.App = $null
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+}
+
+# Every text-bearing shape on a slide as {Shape; Name}, in z-order, inside groups (nested too) and table
+# cells. A cell's shape has no name of its own, so Name says "<table> r,c".
+function Get-TextItems($slide) {
+    function Get-ShapeTextItems($shape) {
+        if ($shape.Type -eq 6) {            # msoGroup
+            foreach ($child in @($shape.GroupItems)) { Get-ShapeTextItems $child }
+        } elseif ($shape.HasTable) {
+            $t = $shape.Table
+            for ($r = 1; $r -le $t.Rows.Count; $r++) {
+                for ($c = 1; $c -le $t.Columns.Count; $c++) {
+                    [pscustomobject]@{ Shape = $t.Cell($r, $c).Shape; Name = "{0} {1},{2}" -f $shape.Name, $r, $c }
+                }
+            }
+        } elseif ($shape.HasTextFrame) {
+            [pscustomobject]@{ Shape = $shape; Name = $shape.Name }
+        }
+    }
+    foreach ($sh in @($slide.Shapes)) { Get-ShapeTextItems $sh }
 }
 
 # Slides and shapes are found by their text, never by index: hand edits move and renumber slides.
 function Get-SlideTexts($slide) {
-    @($slide.Shapes) | Where-Object { $_.HasTextFrame } | ForEach-Object { $_.TextFrame.TextRange.Text }
+    @(Get-TextItems $slide) | ForEach-Object { $_.Shape.TextFrame.TextRange.Text }
 }
 function Find-Slide($deck, [string]$pattern) {
     @($deck.Slides) | Where-Object { (Get-SlideTexts $_) -match $pattern } | Select-Object -First 1
 }
 function Find-Shape($slide, [string]$pattern) {
-    @($slide.Shapes) | Where-Object { $_.HasTextFrame -and $_.TextFrame.TextRange.Text -match $pattern } | Select-Object -First 1
+    @(Get-TextItems $slide) | Where-Object { $_.Shape.TextFrame.TextRange.Text -match $pattern } |
+        Select-Object -First 1 | ForEach-Object { $_.Shape }
+}
+
+# Replaces the one occurrence of $old (literal, case-sensitive) in a deck or on one slide, keeping the run's
+# formatting (assigning .Text would drop a bold number's bold). Throws when $old is missing (the edit is
+# already applied, or the text was changed by hand) or occurs more than once. Returns the shape.
+function Edit-DeckText($target, [string]$old, [string]$new) {
+    $slides = if ($target.PSObject.Properties['Slides']) { @($target.Slides) } else { @($target) }
+    $hits = @(foreach ($s in $slides) {
+        foreach ($it in @(Get-TextItems $s)) {
+            $n = [regex]::Matches([string]$it.Shape.TextFrame.TextRange.Text, [regex]::Escape($old)).Count
+            for ($i = 0; $i -lt $n; $i++) { [pscustomobject]@{ Slide = $s.SlideIndex; Shape = $it.Shape } }
+        }
+    })
+    if ($hits.Count -eq 0) { throw "'$old' not found: already applied, or changed by hand" }
+    if ($hits.Count -gt 1) {
+        throw ("'$old' occurs {0} times, on slides {1}" -f $hits.Count, ((@($hits | ForEach-Object { $_.Slide }) | Select-Object -Unique) -join ", "))
+    }
+    $shape = $hits[0].Shape
+    [void]$shape.TextFrame.TextRange.Replace($old, $new, 0, -1, 0)     # After, MatchCase, WholeWords
+    $shape
 }
 function Get-Picture($slide) { @($slide.Shapes) | Where-Object { $_.Type -eq $MsoPicture } | Select-Object -First 1 }
 
@@ -179,7 +247,7 @@ function Get-PlaceholderKind([int]$type) {
 # A new, unsaved deck from a .pptx or .potx template (the file is never written), without its sample slides;
 # -KeepSlides keeps them, for a slide library.
 function New-DeckFromTemplate([string]$template, [switch]$KeepSlides) {
-    $app = New-Object -ComObject PowerPoint.Application
+    $app = Get-PowerPointApp
     $wasRunning = $app.Presentations.Count -gt 0
     $deck = $app.Presentations.Open((Resolve-Path $template).Path, $false, $true, $false)   # Untitled: a copy
     if (-not $KeepSlides) { while ($deck.Slides.Count -gt 0) { $deck.Slides.Item(1).Delete() } }
@@ -205,18 +273,20 @@ function Get-SlideLibrary($deck) {
     foreach ($s in @($deck.Slides)) {
         $role = Get-SlideRole $s
         if (-not $role) { continue }
-        $texts = @(@($s.Shapes) | Where-Object { $_.HasTextFrame -and $_.TextFrame.HasText })
+        $texts = @(@(Get-TextItems $s) | Where-Object { $_.Shape.TextFrame.HasText })
         $shapes = @($texts | ForEach-Object {
-            $t = $_.TextFrame.TextRange.Text -replace "[\r\n\v]+", " / "
+            $t = $_.Shape.TextFrame.TextRange.Text -replace "[\r\n\v]+", " / "
             "{0}: {1}" -f $_.Name, $t.Substring(0, [math]::Min(40, $t.Length))
         })
-        $title = if ($texts.Count -gt 0) { $texts[0].TextFrame.TextRange.Text } else { "" }
+        $title = if ($texts.Count -gt 0) { $texts[0].Shape.TextFrame.TextRange.Text } else { "" }
         [pscustomobject]@{ Role = $role; Slide = $s.SlideIndex; Title = $title; Shapes = $shapes }
     }
 }
 
 # Duplicates the first slide tagged $role, puts the copy just before the first pattern slide, untags it, and
-# sets the text of the shape matching each key regex (Find-Shape) in $texts. Returns the new slide.
+# sets the text of the shape matching each key regex (Find-Shape) in $texts. Every key is matched against the
+# pattern's text before any is written, so one new text never decides where another goes. Throws, deleting
+# the copy, when a key matches nothing or two keys match the same shape. Returns the new slide.
 function Add-FromLibrary($deck, [string]$role, [hashtable]$texts) {
     $src = @(@($deck.Slides) | Where-Object { (Get-SlideRole $_) -eq $role }) | Select-Object -First 1
     if (-not $src) { throw "no slide tagged role '$role'" }
@@ -225,10 +295,18 @@ function Add-FromLibrary($deck, [string]$role, [hashtable]$texts) {
     $copy.Name = "built-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
     $first = @(@($deck.Slides) | Where-Object { Get-SlideRole $_ }) | Select-Object -First 1
     $copy.MoveTo($first.SlideIndex)
+    # Keys resolve to positions in the walker's list: COM gives no reliable identity to compare shapes by.
+    $items = @(Get-TextItems $copy)
+    $at = @{}
     foreach ($key in $texts.Keys) {
-        $shape = Find-Shape $copy $key
-        if (-not $shape) { $copy.Delete(); throw "no shape on the '$role' slide matches '$key'" }
-        $shape.TextFrame.TextRange.Text = ([string]$texts[$key] -replace "`r?`n", "`r")
+        $i = -1
+        for ($j = 0; $j -lt $items.Count; $j++) { if ($items[$j].Shape.TextFrame.TextRange.Text -match $key) { $i = $j; break } }
+        if ($i -lt 0) { $copy.Delete(); throw "no shape on the '$role' slide matches '$key'" }
+        if ($at.ContainsKey($i)) { $copy.Delete(); throw "'$key' and '$($at[$i])' match the same shape on the '$role' slide" }
+        $at[$i] = $key
+    }
+    foreach ($i in $at.Keys) {
+        $items[$i].Shape.TextFrame.TextRange.Text = ([string]$texts[$at[$i]] -replace "`r?`n", "`r")
     }
     $copy
 }
@@ -274,7 +352,7 @@ function Remove-EmptyPlaceholders($slide) {
 function New-TemplateFromTheme([string]$outPath, [string]$dark, [string]$light, [string[]]$accents,
                                [string]$headingFont, [string]$bodyFont, [string]$dark2, [string]$light2) {
     if (-not $dark2) { $dark2 = $dark }; if (-not $light2) { $light2 = $light }
-    $app = New-Object -ComObject PowerPoint.Application
+    $app = Get-PowerPointApp
     $wasRunning = $app.Presentations.Count -gt 0
     $p = $app.Presentations.Add($false)
     try {
@@ -297,18 +375,20 @@ function New-TemplateFromTheme([string]$outPath, [string]$dark, [string]$light, 
         $sec.FollowMasterBackground = $false; $sec.Background.Fill.Solid(); $sec.Background.Fill.ForeColor.RGB = ConvertTo-Bgr $dark
         foreach ($ph in @($sec.Shapes.Placeholders)) { if ($ph.HasTextFrame) { $ph.TextFrame.TextRange.Font.Color.RGB = ConvertTo-Bgr $light } }
         $p.SaveAs($outPath, 26)        # ppSaveAsOpenXMLTemplate (.potx)
-    } finally {
-        $p.Close()
-        if (-not $wasRunning -and $app.Presentations.Count -eq 0) { $app.Quit() }
-    }
+    } finally { Close-Deck ([pscustomobject]@{ App = $app; Deck = $p; WasRunning = $wasRunning }) }
 }
 
-# One PNG per slide, to look at the deck the way it will be projected.
+# One PNG per slide, to look at the deck the way it will be projected. Old slide*.png in $dir go first (a
+# shorter deck would leave stale renders); numbers are zero-padded to the slide count's digits, at least 2.
 function Export-SlidePngs($deck, [string]$dir, $width = 1600) {
     $dir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($dir)
     New-Item -ItemType Directory -Force $dir | Out-Null
+    Get-ChildItem -LiteralPath $dir -Filter "slide*.png" | Remove-Item -Force
     $h = [int]($width * $deck.PageSetup.SlideHeight / $deck.PageSetup.SlideWidth)
-    foreach ($s in @($deck.Slides)) { $s.Export((Join-Path $dir ("slide{0:D2}.png" -f $s.SlideIndex)), "PNG", $width, $h) }
+    $digits = [math]::Max(2, ([string]$deck.Slides.Count).Length)
+    foreach ($s in @($deck.Slides)) {
+        $s.Export((Join-Path $dir ("slide" + ([string]$s.SlideIndex).PadLeft($digits, '0') + ".png")), "PNG", $width, $h)
+    }
 }
 
 # A plain-text dump of every slide (shapes, boxes, text, notes, effects). Diff two dumps to see what a
@@ -331,40 +411,39 @@ function Write-DeckDump($deck, [string]$outFile) {
 
 # Text left over from drafting (placeholders, build notes, file paths, variant labels), as a list of
 # {Slide; Where; Match; Text}. Scans shapes, groups, table cells and notes; prints nothing itself.
-function Test-DeckLeftovers($deck, [string[]]$extraPatterns) {
+# $extraPatterns add to the defaults; a hit whose text matches an $exclude regex is dropped. A slide with
+# review comments gives one finding (Where "comments", Match their count). The default patterns are shared
+# with pptx_check.py and tests/leftover_cases.txt: change them together.
+function Test-DeckLeftovers($deck, [string[]]$extraPatterns, [string[]]$exclude) {
     $euro = [string][char]0x20AC
     $patterns = @('lorem|ipsum', '\bTODO\b|\bTBD\b|\bFIXME\b',
         ('\[insert|\[placeholder|\[' + $euro + '__\]|\[[A-Z ]*__\]'), 'click to add', 'made with claude',
-        '\b(option|variant) [A-D]\b', '[A-Za-z]:\x5C|\.(py|ps1|csv|json|md)\b', '\bsource:') + @($extraPatterns | Where-Object { $_ })
+        '\b(option|variant) [A-D]\b', '[A-Za-z]:\x5C|\.(py|ps1|csv|json|md)\b') + @($extraPatterns | Where-Object { $_ })
+    $exclude = @($exclude | Where-Object { $_ })
+    # One list entry per text: (slide index, location, text).
     $pending = New-Object System.Collections.ArrayList
-    # One list entry per text run: (slide index, location, text).
-    function Add-Texts($index, $shape) {
-        if ($shape.Type -eq 6) {            # msoGroup
-            foreach ($child in @($shape.GroupItems)) { Add-Texts $index $child }
-            return
-        }
-        $where = "shape " + $shape.Name
-        if ($shape.HasTable) {
-            foreach ($row in @($shape.Table.Rows)) {
-                foreach ($cell in @($row.Cells)) { [void]$pending.Add(@($index, $where, $cell.Shape.TextFrame.TextRange.Text)) }
-            }
-        } elseif ($shape.HasTextFrame) {
-            [void]$pending.Add(@($index, $where, $shape.TextFrame.TextRange.Text))
-        }
-    }
     foreach ($s in @($deck.Slides)) {
-        foreach ($sh in @($s.Shapes)) { Add-Texts $s.SlideIndex $sh }
+        foreach ($it in @(Get-TextItems $s)) { [void]$pending.Add(@($s.SlideIndex, ("shape " + $it.Name), $it.Shape.TextFrame.TextRange.Text)) }
         foreach ($sh in @($s.NotesPage.Shapes)) {
             if ($sh.Type -eq 14 -and $sh.HasTextFrame -and $sh.PlaceholderFormat.Type -eq 2) { [void]$pending.Add(@($s.SlideIndex, "notes", $sh.TextFrame.TextRange.Text)) }
         }
     }
     foreach ($p in $pending) {
+        $text = [string]$p[2]
+        if (@($exclude | Where-Object { [regex]::IsMatch($text, $_, 'IgnoreCase') }).Count) { continue }
         foreach ($re in $patterns) {
-            $m = [regex]::Match([string]$p[2], $re, 'IgnoreCase')
+            $m = [regex]::Match($text, $re, 'IgnoreCase')
             if ($m.Success) {
-                $t = ([string]$p[2]) -replace "[\r\n\v]+", " / "
+                $t = $text -replace "[\r\n\v]+", " / "
                 [pscustomobject]@{ Slide = $p[0]; Where = $p[1]; Match = $m.Value; Text = $t.Substring(0, [math]::Min(80, $t.Length)) }
             }
+        }
+    }
+    foreach ($s in @($deck.Slides)) {
+        $n = $s.Comments.Count
+        if ($n -gt 0) {
+            $t = [string]$s.Comments.Item(1).Text -replace "[\r\n\v]+", " / "
+            [pscustomobject]@{ Slide = $s.SlideIndex; Where = "comments"; Match = $n; Text = $t.Substring(0, [math]::Min(80, $t.Length)) }
         }
     }
 }
