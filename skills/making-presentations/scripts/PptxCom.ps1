@@ -32,7 +32,7 @@ function Open-Deck([string]$path, [switch]$ReadOnly) {
         try { $fs = [System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None'); $fs.Close() }
         catch { throw "$path is open in another program (close it in PowerPoint first)" }
         $bak = Join-Path (Split-Path $path) ([System.IO.Path]::GetFileNameWithoutExtension($path) +
-            ".bak-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".pptx")
+            ".bak-" + (Get-Date -Format "yyyyMMdd-HHmmss") + [System.IO.Path]::GetExtension($path))
         Copy-Item -LiteralPath $path $bak
     }
     # Attaches to a running PowerPoint if there is one; Close-Deck leaves it running in that case.
@@ -59,11 +59,53 @@ function Get-PowerPointApp {
     }
 }
 
-# Saves as .pptx with the fonts embedded (needs fonts whose licence allows embedding, e.g. OFL).
+# Saves as .pptx with the fonts embedded (needs fonts whose licence allows embedding, e.g. OFL), warns for
+# each font that cannot be embedded, and records the deck beside a .pptx as <name>.dump.txt (its hash, then
+# its dump) so Get-DeckHandEdits can tell later what was changed by hand.
 function Save-Deck($session, [string]$path) {
     if (-not $path) { $path = $session.Path }
     else { $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path) }   # COM resolves relative paths against its own folder
+    if (-not $path) { throw "Save-Deck: no path; a deck from New-DeckFromTemplate needs one (Save-Deck `$s out.pptx)" }
+    $start = Get-Date
     $session.Deck.SaveAs($path, 24, -1)     # ppSaveAsOpenXMLPresentation, EmbedTrueTypeFonts
+    # A hidden dialog (font embedding) can leave SaveAs returning without writing: check the file itself.
+    # The second of slack covers file systems that store coarse write times.
+    $f = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+    if (-not $f -or $f.LastWriteTime -lt $start.AddSeconds(-1)) { throw "Save-Deck: $path was not written (a hidden PowerPoint dialog?)" }
+    foreach ($font in @($session.Deck.Fonts)) {
+        if ($font.Embeddable -eq 0) { Write-Warning "font '$($font.Name)' cannot be embedded: viewers without it see a substitute" }
+    }
+    if ([System.IO.Path]::GetExtension($path) -eq ".pptx") {
+        $record = @("sha256 " + (Get-FileSha256 $path)) + @(Get-DeckDump $session.Deck)
+        $record | Set-Content -Encoding UTF8 (Get-DeckRecordPath $path)
+    }
+}
+
+# The record Save-Deck writes beside a deck.
+function Get-DeckRecordPath([string]$path) {
+    Join-Path (Split-Path $path) ([System.IO.Path]::GetFileNameWithoutExtension($path) + ".dump.txt")
+}
+
+# Read with sharing, since PowerPoint keeps the open deck's file locked for writing.
+function Get-FileSha256([string]$path) {
+    $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { -join ($sha.ComputeHash($fs) | ForEach-Object { $_.ToString("x2") }) } finally { $sha.Dispose(); $fs.Close() }
+}
+
+# What changed in the session's file since Save-Deck last recorded it: nothing when the file is unchanged,
+# else the dump lines that differ, "- " for the recorded ones and "+ " for the current ones. Throws when
+# there is no record beside the deck.
+function Get-DeckHandEdits($session) {
+    $record = Get-DeckRecordPath $session.Path
+    if (-not (Test-Path -LiteralPath $record)) { throw "no record ${record}: save the deck once with Save-Deck first" }
+    $lines = @(Get-Content -LiteralPath $record -Encoding UTF8)
+    if ($lines[0] -eq ("sha256 " + (Get-FileSha256 $session.Path))) { return }
+    $was = @($lines | Select-Object -Skip 1)
+    $now = @(Get-DeckDump $session.Deck)
+    $diff = @(Compare-Object $was $now -CaseSensitive)
+    $diff | Where-Object { $_.SideIndicator -eq '<=' } | ForEach-Object { "- " + $_.InputObject }
+    $diff | Where-Object { $_.SideIndicator -eq '=>' } | ForEach-Object { "+ " + $_.InputObject }
 }
 
 # Closes the deck and drops the session's COM references: PowerPoint, started windowless, stays alive while
@@ -81,21 +123,21 @@ function Close-Deck($session) {
 # Every text-bearing shape on a slide as {Shape; Name}, in z-order, inside groups (nested too) and table
 # cells. A cell's shape has no name of its own, so Name says "<table> r,c".
 function Get-TextItems($slide) {
-    function Get-ShapeTextItems($shape) {
-        if ($shape.Type -eq 6) {            # msoGroup
-            foreach ($child in @($shape.GroupItems)) { Get-ShapeTextItems $child }
-        } elseif ($shape.HasTable) {
-            $t = $shape.Table
-            for ($r = 1; $r -le $t.Rows.Count; $r++) {
-                for ($c = 1; $c -le $t.Columns.Count; $c++) {
-                    [pscustomobject]@{ Shape = $t.Cell($r, $c).Shape; Name = "{0} {1},{2}" -f $shape.Name, $r, $c }
-                }
-            }
-        } elseif ($shape.HasTextFrame) {
-            [pscustomobject]@{ Shape = $shape; Name = $shape.Name }
-        }
-    }
     foreach ($sh in @($slide.Shapes)) { Get-ShapeTextItems $sh }
+}
+function Get-ShapeTextItems($shape) {
+    if ($shape.Type -eq 6) {            # msoGroup
+        foreach ($child in @($shape.GroupItems)) { Get-ShapeTextItems $child }
+    } elseif ($shape.HasTable) {
+        $t = $shape.Table
+        for ($r = 1; $r -le $t.Rows.Count; $r++) {
+            for ($c = 1; $c -le $t.Columns.Count; $c++) {
+                [pscustomobject]@{ Shape = $t.Cell($r, $c).Shape; Name = "{0} {1},{2}" -f $shape.Name, $r, $c }
+            }
+        }
+    } elseif ($shape.HasTextFrame) {
+        [pscustomobject]@{ Shape = $shape; Name = $shape.Name }
+    }
 }
 
 # Slides and shapes are found by their text, never by index: hand edits move and renumber slides.
@@ -391,20 +433,31 @@ function Export-SlidePngs($deck, [string]$dir, $width = 1600) {
     }
 }
 
-# A plain-text dump of every slide (shapes, boxes, text, notes, effects). Diff two dumps to see what a
-# person changed by hand before editing a deck that has hand edits.
-function Write-DeckDump($deck, [string]$outFile) {
-    $lines = foreach ($s in @($deck.Slides)) {
+# A plain-text dump of every slide (shapes, boxes, first font and size, text, notes, effects), as lines;
+# text inside groups and table cells gets an indented line of its own. Save-Deck records it, and
+# Get-DeckHandEdits diffs it to see what a person changed by hand.
+function Get-DeckDump($deck) {
+    function Format-Text($shape) {
+        $r = $shape.TextFrame.TextRange
+        if (-not $r.Text) { return "" }
+        $f = $r.Runs(1).Font
+        "{0} {1}  {2}" -f $f.Name, $f.Size, ($r.Text -replace "[\r\n\v]+", " / ")
+    }
+    foreach ($s in @($deck.Slides)) {
         "=== slide {0}  layout '{1}'  transition {2}  effects {3}" -f $s.SlideIndex, $s.CustomLayout.Name,
             $s.SlideShowTransition.EntryEffect, $s.TimeLine.MainSequence.Count
         foreach ($sh in @($s.Shapes)) {
-            $t = if ($sh.HasTextFrame) { ($sh.TextFrame.TextRange.Text -replace "[\r\n\v]+", " / ") } else { "" }
+            $inside = $sh.Type -eq 6 -or $sh.HasTable
+            $t = if (-not $inside -and $sh.HasTextFrame) { Format-Text $sh } else { "" }
             "  [{0}] type {1}  {2:N0},{3:N0} {4:N0}x{5:N0}  {6}" -f $sh.Name, $sh.Type, $sh.Left, $sh.Top, $sh.Width, $sh.Height, $t
+            if ($inside) { foreach ($it in @(Get-ShapeTextItems $sh)) { "    [{0}]  {1}" -f $it.Name, (Format-Text $it.Shape) } }
         }
         $n = $s.NotesPage.Shapes.Placeholders.Item(2).TextFrame.TextRange.Text
         if ($n) { "  notes: " + ($n -replace "[\r\n\v]+", " / ") }
     }
-    $lines | Set-Content -Encoding UTF8 $outFile
+}
+function Write-DeckDump($deck, [string]$outFile) {
+    Get-DeckDump $deck | Set-Content -Encoding UTF8 $outFile
 }
 
 # --- checks and previews --------------------------------------------------------------------------
