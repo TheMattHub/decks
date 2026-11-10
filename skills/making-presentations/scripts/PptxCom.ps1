@@ -57,7 +57,7 @@ function Get-PowerPointApp {
             [void]$app.Presentations.Count       # the first call is the one a closing PowerPoint rejects
             break
         } catch {
-            $busy = $_.Exception.Message -match 'rejected|RPC server is unavailable|0x80010001|0x800706BA|0x80080005'
+            $busy = $_.Exception.Message -match 'rejected|RPC server is unavailable|0x80010001|0x800706BA|0x800706B5|0x80080005'
             if (-not $busy -or (Get-Date) -gt $deadline) { throw }
             Start-Sleep -Milliseconds 500
         }
@@ -118,11 +118,12 @@ function Save-Deck($session, [string]$path) {
     # The second of slack covers file systems that store coarse write times.
     $f = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
     if (-not $f -or $f.LastWriteTime -lt $start.AddSeconds(-1)) { throw "Save-Deck: $path was not written (a hidden PowerPoint dialog?)" }
+    $session.Path = $path         # the deck is that file now: Get-DeckHandEdits reads its record
     foreach ($font in @($session.Deck.Fonts)) {
         if ($font.Embeddable -eq 0) { Write-Warning "font '$($font.Name)' cannot be embedded: viewers without it see a substitute" }
     }
     if ([System.IO.Path]::GetExtension($path) -eq ".pptx") {
-        $record = @("sha256 " + (Get-FileSha256 $path)) + @(Get-DeckDump $session.Deck)
+        $record = @("sha256 " + (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()) + @(Get-DeckDump $session.Deck)
         $record | Set-Content -Encoding UTF8 (Get-DeckRecordPath $path)
     }
 }
@@ -132,13 +133,6 @@ function Get-DeckRecordPath([string]$path) {
     Join-Path (Split-Path $path) ([System.IO.Path]::GetFileNameWithoutExtension($path) + ".dump.txt")
 }
 
-# Read with sharing, since PowerPoint keeps the open deck's file locked for writing.
-function Get-FileSha256([string]$path) {
-    $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { -join ($sha.ComputeHash($fs) | ForEach-Object { $_.ToString("x2") }) } finally { $sha.Dispose(); $fs.Close() }
-}
-
 # What changed in the session's file since Save-Deck last recorded it: nothing when the file is unchanged,
 # else the dump lines that differ, "- " for the recorded ones and "+ " for the current ones. Throws when
 # there is no record beside the deck.
@@ -146,7 +140,7 @@ function Get-DeckHandEdits($session) {
     $record = Get-DeckRecordPath $session.Path
     if (-not (Test-Path -LiteralPath $record)) { throw "no record ${record}: save the deck once with Save-Deck first" }
     $lines = @(Get-Content -LiteralPath $record -Encoding UTF8)
-    if ($lines[0] -eq ("sha256 " + (Get-FileSha256 $session.Path))) { return }
+    if ($lines[0] -eq ("sha256 " + (Get-FileHash -LiteralPath $session.Path -Algorithm SHA256).Hash.ToLower())) { return }
     $was = @($lines | Select-Object -Skip 1)
     $now = @(Get-DeckDump $session.Deck)
     $diff = @(Compare-Object $was $now -CaseSensitive)
@@ -293,11 +287,13 @@ function Add-BuildIn($slide, $shapes, $effect = $MsoFadeIn, $trigger = $OnClick,
 # Applies a manifest from slides_manifest.py (its docstring is the schema) to the PowerPoint export of a
 # Claude Slides deck: transitions, build-ins and videos, which the export drops. Slide i of the manifest is
 # slide i of the deck; its title, whitespace collapsed and compared literally, must be one of the slide's
-# texts (an empty title is not checked). A build finds its shape by text: the one top-level shape holding a
-# text that starts with the build's text. A build without text (an image) is skipped with a warning. A
-# video's file is the one in $mediaDir named like the last segment of its src (with or without extension);
-# a video without a box fills the slide. Everything is checked first: when anything cannot be applied, it
-# throws once listing every item and the deck is not changed. Run it once per export (it adds, never replaces).
+# texts (an empty title is not checked). A build finds its shape by text: the one top-level shape holding
+# exactly the build's text, else the one holding a text that starts with it. A build without text (an image)
+# is skipped with a warning. A video's file is the one in $mediaDir named like the last segment of its src
+# (with or without extension); a video without a box fills the slide. Everything is checked first: when
+# anything cannot be applied, it throws once listing every item and the deck is not changed. Videos go in
+# before anything else, since only inserting tells whether PowerPoint can read a file: when one fails, the
+# videos this call added are deleted and it throws. Run it once per export (it adds, never replaces).
 function Invoke-FinishManifest($deck, [string]$manifestPath, [string]$mediaDir) {
     $m = [System.IO.File]::ReadAllText((Resolve-Path $manifestPath).Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     function Squash($t) { ([string]$t -replace '\s+', ' ').Trim() }
@@ -336,6 +332,9 @@ function Invoke-FinishManifest($deck, [string]$manifestPath, [string]$mediaDir) 
             $hits = @(foreach ($sh in @($slide.Shapes)) {
                 if (@(Get-ShapeTextItems $sh | Where-Object { (Squash $_.Shape.TextFrame.TextRange.Text).StartsWith($text, [System.StringComparison]::Ordinal) }).Count) { $sh }
             })
+            # "38%" also starts "38% of trucks": the shape holding exactly the text wins.
+            $exact = @(foreach ($sh in $hits) { if (@(Get-ShapeTextItems $sh | Where-Object { (Squash $_.Shape.TextFrame.TextRange.Text) -ceq $text }).Count) { $sh } })
+            if ($exact.Count -eq 1) { $hits = $exact }
             if ($hits.Count -eq 1) { [void]$todo.Add(@("build", $slide, $effects[[string]$b.effect], $hits[0])) }
             else { [void]$problems.Add("slide ${n}: $($hits.Count) shapes start with '$text' (one needed for the '$($b.effect)' build)") }
         }
@@ -353,11 +352,22 @@ function Invoke-FinishManifest($deck, [string]$manifestPath, [string]$mediaDir) 
         }
     }
     if ($problems.Count) { throw ("Invoke-FinishManifest: nothing applied, because:`n  " + ($problems -join "`n  ")) }
+    $added = New-Object System.Collections.ArrayList
+    foreach ($t in $todo) {
+        if ($t[0] -ne "video") { continue }
+        $sl = $t[1]; $b = $t[4]; $n0 = $sl.Shapes.Count
+        try { [void]$added.Add((Add-Video $sl $t[2] $t[3] ([single]$b[0]) ([single]$b[1]) ([single]$b[2]) ([single]$b[3]))) }
+        catch {
+            # A poster that fails leaves the new video behind: it is above every shape that was there.
+            while ($sl.Shapes.Count -gt $n0) { $sl.Shapes.Item($sl.Shapes.Count).Delete() }
+            foreach ($v in $added) { $v.Delete() }
+            throw ("Invoke-FinishManifest: nothing applied, because:`n  slide $($sl.SlideIndex): PowerPoint cannot insert '$($t[2])': " + $_.Exception.Message)
+        }
+    }
     foreach ($t in $todo) {
         switch ($t[0]) {
             "transition" { Set-Transition $t[1] $t[2] }
             "build" { Add-BuildIn $t[1] $t[3] $t[2] }
-            "video" { $b = $t[4]; [void](Add-Video $t[1] $t[2] $t[3] ([single]$b[0]) ([single]$b[1]) ([single]$b[2]) ([single]$b[3])) }
         }
     }
 }
@@ -501,9 +511,14 @@ function New-StarterLibrary([string]$template, [string]$out) {
             Set-SlideRole $sl $role
             $sl
         }
-        function Shape($sl, $type, $x, $y, $w, $h, $color) {
-            $r = $sl.Shapes.AddShape($type, [single]($x * $kx), [single]($y * $ky), [single]($w * $kx), [single]($h * $ky))
+        # A circle or square scales by the smaller factor, about its centre, so it stays round on a 4:3 slide.
+        # -Outline draws a thin line: a card's fill (light 2) may equal the background (light 1).
+        function Shape($sl, $type, $x, $y, $w, $h, $color, [switch]$Outline) {
+            $sw = $w * $kx; $sh = $h * $ky
+            if ($w -eq $h) { $sw = $sh = $w * [math]::Min($kx, $ky) }
+            $r = $sl.Shapes.AddShape($type, [single](($x + $w / 2) * $kx - $sw / 2), [single](($y + $h / 2) * $ky - $sh / 2), [single]$sw, [single]$sh)
             $r.Fill.ForeColor.ObjectThemeColor = $color; $r.Line.Visible = 0
+            if ($Outline) { $r.Line.Visible = -1; $r.Line.ForeColor.ObjectThemeColor = $dk2; $r.Line.Weight = [single]0.75 }
         }
         # "+mj-lt" and "+mn-lt" are the theme's heading and body fonts. -Bottom anchors the text to the box's
         # foot, so a title of one line or three ends at the same height, just above what follows it.
@@ -531,7 +546,7 @@ function New-StarterLibrary([string]$template, [string]$out) {
         Text $c 64 44 832 90 "Slide title that makes the point" 32 $dk1 -Heading -Bold
         for ($i = 0; $i -lt 3; $i++) {
             $x = 64 + $i * ($col + 24)
-            Shape $c 1 $x 160 $col 280 $lt2
+            Shape $c 1 $x 160 $col 280 $lt2 -Outline
             Shape $c 1 $x 160 $col 6 $acc1
             Text $c ($x + 20) 186 ($col - 40) 66 ("Card " + $names[$i]) 24 $dk1 -Heading -Bold
             Text $c ($x + 20) 256 ($col - 40) 170 ("Two or three lines on what card " + $names[$i] + " says.") 18 $dk2
@@ -542,9 +557,10 @@ function New-StarterLibrary([string]$template, [string]$out) {
         $nums = "38%", "120", "4"
         for ($i = 0; $i -lt 3; $i++) {
             $x = 64 + $i * ($col + 24)
-            Text $c $x 120 $col 214 $nums[$i] 72 $lt1 -Heading -Bold -Bottom
-            Shape $c 1 $x 346 48 6 $acc1
-            Text $c $x 362 ($col - 16) 100 ("what number " + $names[$i] + " counts") 20 $lt2
+            # Tall enough for the sample: "[placeholder]" alone takes two lines at this size.
+            Text $c $x 134 $col 258 $nums[$i] 72 $lt1 -Heading -Bold -Bottom
+            Shape $c 1 $x 404 48 6 $acc1
+            Text $c $x 420 ($col - 16) 80 ("what number " + $names[$i] + " counts") 20 $lt2
         }
 
         $c = Pattern "quote" $lt2
@@ -719,19 +735,20 @@ function Test-DeckLeftovers($deck, [string[]]$extraPatterns, [string[]]$exclude)
 
 # Layout faults, as a list of {Slide; Where; Check; Detail}; prints nothing. $minPt is for a 960 pt wide
 # slide and scales with the slide's width. Checks: small-text (a run under the minimum; date, footer and
-# slide-number placeholders are skipped), overflow (a fixed-size frame whose text is over 2 pt taller than
-# the shape; table rows grow, so cells are skipped), off-slide (a top-level unrotated shape leaving the slide
-# by over 1 pt), font (a deck font that cannot be embedded: Slide 0, Where "deck").
+# slide-number placeholders are skipped), overflow (a frame that does not grow to fit its text, shrink on
+# overflow included, whose text is over 2 pt taller than the shape; table rows grow, so cells are skipped),
+# off-slide (a top-level unrotated shape leaving the slide by over 1 pt; pictures are skipped, since a photo
+# may bleed off the edge on purpose), font (a deck font that cannot be embedded: Slide 0, Where "deck").
 function Test-DeckLayout($deck, $minPt = 12) {
     $W = $deck.PageSetup.SlideWidth; $H = $deck.PageSetup.SlideHeight
     $min = $minPt * $W / 960
     foreach ($s in @($deck.Slides)) {
         foreach ($sh in @($s.Shapes)) {
-            if ($sh.Rotation -eq 0 -and ($sh.Left -lt -1 -or $sh.Top -lt -1 -or $sh.Left + $sh.Width -gt $W + 1 -or $sh.Top + $sh.Height -gt $H + 1)) {
+            if ($sh.Type -ne $MsoPicture -and $sh.Rotation -eq 0 -and ($sh.Left -lt -1 -or $sh.Top -lt -1 -or $sh.Left + $sh.Width -gt $W + 1 -or $sh.Top + $sh.Height -gt $H + 1)) {
                 [pscustomobject]@{ Slide = $s.SlideIndex; Where = "shape " + $sh.Name; Check = "off-slide"
                     Detail = "{0:N0},{1:N0} {2:N0}x{3:N0} on a {4:N0}x{5:N0} slide" -f $sh.Left, $sh.Top, $sh.Width, $sh.Height, $W, $H }
             }
-            if ($sh.Type -eq 14 -and @(13, 15, 16) -contains $sh.PlaceholderFormat.Type) { continue }   # date, footer, slide number
+            if ($sh.Type -eq 14 -and @("date", "footer", "number") -contains (Get-PlaceholderKind $sh.PlaceholderFormat.Type)) { continue }
             foreach ($it in @(Get-ShapeTextItems $sh)) {
                 $r = $it.Shape.TextFrame.TextRange
                 if (-not $r.Text.Trim()) { continue }
@@ -745,7 +762,7 @@ function Test-DeckLayout($deck, $minPt = 12) {
                         Detail = "{0} pt under {1:0.#} pt: {2}" -f ($small | Measure-Object -Minimum).Minimum, $min, $t }
                 }
                 # BoundHeight is measured on the slide, so a rotated shape's text looks taller than it is: skipped.
-                if (-not $sh.HasTable -and $it.Shape.Rotation -eq 0 -and $it.Shape.TextFrame.AutoSize -eq 0 -and $r.BoundHeight -gt $it.Shape.Height + 2) {
+                if (-not $sh.HasTable -and $it.Shape.Rotation -eq 0 -and $it.Shape.TextFrame.AutoSize -ne 1 -and $r.BoundHeight -gt $it.Shape.Height + 2) {
                     [pscustomobject]@{ Slide = $s.SlideIndex; Where = "shape " + $it.Name; Check = "overflow"
                         Detail = "text {0:N0} pt tall in a {1:N0} pt box: {2}" -f $r.BoundHeight, $it.Shape.Height, $t }
                 }

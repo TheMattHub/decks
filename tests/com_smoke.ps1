@@ -210,6 +210,9 @@ function Invoke-ComChecks {
                 [bool]($rec -match '^    \[.+\]  Segoe UI 18  Nested gamma$') -and
                 [bool]($rec -match '^    \[.+ 2,2\]  .+ Cell epsilon$')
         }
+        Check "W-B after Save-Deck to a path, the session is that file: Get-DeckHandEdits reads its record" {
+            ($s.Path -eq $wb) -and (@(Get-DeckHandEdits $s).Count -eq 0)
+        }
 
         # W-C: contact sheet
         Check "W-C Export-ContactSheet: one labelled tile per slide, sheet of the expected size" {
@@ -303,13 +306,23 @@ function Invoke-LayoutChecks {
         $t = $ok.Shapes.AddTable(1, 1, 20, 100, 300, 20)
         $t.Table.Cell(1, 1).Shape.TextFrame.TextRange.Text = ("A cell grows with its text. " * 6)
         $rot = Add-TextBox $ok 800 100 300 40 "Rotated past the edge" "Segoe UI" 14 "#000000"; $rot.Rotation = 30
+        [void](Add-PictureFill $ok (Join-Path $work "png\slide01.png") -20 300 400 260)     # a photo bleeding off the edge
         $bad = Add-LayoutSlide $d '^Blank$'
         $small = Add-TextBox $bad 20 20 300 40 "Fine " "Segoe UI" 14 "#000000"
         $small.TextFrame.TextRange.InsertAfter("tiny").Font.Size = 10
         $over = Add-TextBox $bad 20 100 200 60 ("Too much text for this box. " * 12) "Segoe UI" 14 "#000000"
         $off = Add-TextBox $bad -10 300 200 40 "Off the left" "Segoe UI" 14 "#000000"
+        $shrink = Add-LayoutSlide $d '^Title and content$'
+        Set-PlaceholderText $shrink 'title' "Too many bullets"
+        Set-PlaceholderText $shrink 'body' ((1..25 | ForEach-Object { "Bullet line number $_ with some words" }) -join "`n")
         $f = @(Test-DeckLayout $d)
-        Check "W-A nothing on a clean slide (full-bleed box, growing table cell, rotated shape)" {
+        Check "W-A overflow in a body placeholder that shrinks text on overflow" {
+            $x = @($f | Where-Object { $_.Slide -eq $shrink.SlideIndex })
+            ($x | ForEach-Object { "$($_.Check): $($_.Detail)" }) -join '; '
+            ($x.Count -eq 1) -and ($x[0].Check -eq "overflow") -and ($x[0].Where -eq "shape " + (Get-Placeholder $shrink 'body').Name)
+        }
+        $shrink.Delete()
+        Check "W-A nothing on a clean slide (full-bleed box, growing table cell, rotated shape, bleeding photo)" {
             $x = @($f | Where-Object { $_.Slide -eq $ok.SlideIndex }); if ($x.Count) { ($x | ForEach-Object { "$($_.Check) $($_.Where) $($_.Detail)" }) -join '; ' } else { $true }
         }
         Check "W-A small-text, overflow and off-slide, one each" {
@@ -336,9 +349,31 @@ function Invoke-StarterChecks {
     $libPath = Join-Path $work "Smoke library.pptx"
     New-StarterLibrary $tpl $libPath
     $roles = "cover", "section", "cards", "big-numbers", "quote", "timeline", "closing"
+    # A 4:3 copy of the template: x and y scale differently there.
+    $tpl43 = Join-Path $work "Smoke43.pptx"; $lib43 = Join-Path $work "Smoke43 library.pptx"
+    $s = New-DeckFromTemplate $tpl
+    try { $s.Deck.PageSetup.SlideWidth = 720; $s.Deck.PageSetup.SlideHeight = 540; Save-Deck $s $tpl43 } finally { Close-Deck $s }
+    New-StarterLibrary $tpl43 $lib43
+    $s = Open-Deck $lib43 -ReadOnly
+    try {
+        Check "F1 on a 4:3 template the library's circles stay round, and it has no layout findings" {
+            $tl = @(@($s.Deck.Slides) | Where-Object { (Get-SlideRole $_) -eq "timeline" })[0]
+            $ovals = @(@($tl.Shapes) | Where-Object { $_.Type -eq 1 -and $_.AutoShapeType -eq 9 } | ForEach-Object { "{0:N1}x{1:N1}" -f $_.Width, $_.Height })
+            $f = @(Test-DeckLayout $s.Deck)
+            ($ovals -join ' ') + ($f | ForEach-Object { "; $($_.Slide) $($_.Check) $($_.Detail)" })
+            ($ovals.Count -eq 4) -and -not @($ovals | Where-Object { $_ -ne "24.0x24.0" }).Count -and -not $f.Count
+        }
+    } finally { Close-Deck $s }
     $s = New-DeckFromTemplate $libPath -KeepSlides
     try {
         $d = $s.Deck
+        Check "F1 the library itself has no layout findings; the cards have an outline (light 2 may be the background)" {
+            $f = @(Test-DeckLayout $d)
+            $cards = @(@($d.Slides) | Where-Object { (Get-SlideRole $_) -eq "cards" })[0]
+            $outlined = @(@($cards.Shapes) | Where-Object { $_.Type -eq 1 -and $_.Line.Visible -eq -1 }).Count
+            "outlined $outlined" + ($f | ForEach-Object { "; $($_.Slide) $($_.Check) $($_.Detail)" })
+            (-not $f.Count) -and ($outlined -eq 3)
+        }
         Check "F1 New-StarterLibrary tags one pattern per role, every sample text starting [placeholder]" {
             $l = @(Get-SlideLibrary $d)
             $bad = @(foreach ($p in $l) { foreach ($t in @(Get-SlideTexts $d.Slides.Item($p.Slide))) { if ($t -and -not $t.StartsWith("[placeholder]") -and $t -ne [string][char]0x201C) { $t } } })
@@ -381,6 +416,9 @@ function Invoke-ManifestChecks {
         $g2 = Add-TextBox $two 40 300 300 40 "Its label" "Segoe UI" 18 "#000000"
         $grp = $two.Shapes.Range([object[]]@($g1.Name, $g2.Name)).Group()
         $three = Add-LayoutSlide $d '^Blank$'; [void](Add-TextBox $three 40 40 800 60 "Film" "Segoe UI" 32 "#000000")
+        $n38 = Add-TextBox $three 40 400 200 60 "38%" "Segoe UI" 32 "#000000"
+        [void](Add-TextBox $three 300 400 400 60 "38% of trucks" "Segoe UI" 32 "#000000")
+        Set-Content -LiteralPath (Join-Path $media "broken.mp4") -Value "not a video"
         function Write-Manifest($slides) {
             $f = Join-Path $work ("manifest-" + [guid]::NewGuid().ToString("N").Substring(0, 6) + ".json")
             [System.IO.File]::WriteAllText($f, (@{ deck = "Q3 review"; canvas_width = 1920; canvas_height = 1080; slides = $slides } | ConvertTo-Json -Depth 6))
@@ -390,8 +428,13 @@ function Invoke-ManifestChecks {
             @{ index = 1; id = "cover"; title = "Q3 review"; transition = "fade"; builds = @(); videos = @() },
             @{ index = 2; id = "results"; title = "Results"; transition = "push"; videos = @()
                builds = @(@{ effect = "rise"; text = $long.Substring(0, 60) }, @{ effect = "pop"; text = "Grouped point" }, @{ effect = "fade"; text = "" }) },
-            @{ index = 3; id = "film"; title = "Film"; transition = "magic"; builds = @()
+            @{ index = 3; id = "film"; title = "Film"; transition = "magic"; builds = @(@{ effect = "fade"; text = "38%" })
                videos = @(@{ src = "/_blob/ab12"; poster = "/_blob/missing"; box = @{ x = 192; y = 108; w = 960; h = 540 } }) })
+        $unreadable = Write-Manifest @(
+            @{ index = 1; id = "cover"; title = "Q3 review"; transition = "fade"; builds = @(); videos = @() },
+            @{ index = 2; id = "results"; title = "Results"; transition = $null; videos = @(); builds = @(@{ effect = "pop"; text = "Grouped point" }) },
+            @{ index = 3; id = "film"; title = "Film"; transition = $null; builds = @()
+               videos = @(@{ src = "/_blob/ab12"; poster = $null; box = $null }, @{ src = "/_blob/broken"; poster = $null; box = $null }) })
         $bad = Write-Manifest @(
             @{ index = 1; id = "cover"; title = "Q3 overview"; transition = "spin"; builds = @(); videos = @() },
             @{ index = 2; id = "results"; title = "Results"; transition = $null; videos = @(); builds = @(@{ effect = "rise"; text = "Revenue" }) },
@@ -404,7 +447,14 @@ function Invoke-ManifestChecks {
             $missing = @($want -split '\|' | Where-Object { $msg -notmatch $_ })
             if ($missing.Count) { "missing: " + ($missing -join ', ') + " in: " + $msg } else { (@(Get-DeckDump $d) -join "`n") -eq $before }
         }
-        Check "F2 transitions, builds by text (a 60-character prefix, a group), the video in its scaled box" {
+        Check "F2 a video file PowerPoint cannot read throws and changes nothing (the video before it goes too)" {
+            if (-not $ff) { return "no ffmpeg (uv with imageio-ffmpeg) to make a clip" }
+            $before = @(Get-DeckDump $d) -join "`n"
+            $msg = try { Invoke-FinishManifest $d $unreadable $media; "did not throw" } catch { $_.Exception.Message }
+            $after = @(Get-DeckDump $d) -join "`n"
+            if ($msg -notmatch "slide 3: PowerPoint cannot insert '.+broken\.mp4'") { $msg } else { $after -eq $before }
+        }
+        Check "F2 transitions, builds by text (a 60-character prefix, a group, '38%' beside '38% of trucks'), the video in its scaled box" {
             if (-not $ff) { return "no ffmpeg (uv with imageio-ffmpeg) to make a clip" }
             $warn = @(Invoke-FinishManifest $d $good $media 3>&1)          # it outputs nothing but warnings
             $seq = $two.TimeLine.MainSequence
@@ -415,7 +465,8 @@ function Invoke-ManifestChecks {
                 ($seq.Item(1).Shape.Name -eq $cost.Name) -and ($seq.Item(1).EffectType -eq $MsoRiseUp) -and
                 ($seq.Item(2).Shape.Name -eq $grp.Name) -and ($seq.Item(2).EffectType -eq $MsoZoom) -and
                 ($v.Count -eq 1) -and ([math]::Round($v[0].Left) -eq 96) -and ([math]::Round($v[0].Top) -eq 54) -and
-                ([math]::Round($v[0].Width) -eq 480) -and ($warn.Count -eq 2)
+                ([math]::Round($v[0].Width) -eq 480) -and ($warn.Count -eq 2) -and
+                [bool]@(@($three.TimeLine.MainSequence) | Where-Object { $_.Shape.Name -eq $n38.Name -and $_.EffectType -eq $MsoFadeIn }).Count
         }
     } finally { Close-Deck $s }
 }
@@ -485,13 +536,11 @@ if (Get-Process -Id $id -ErrorAction SilentlyContinue) { "running" } else { "sto
             "joined $joined, Stop-PowerPoint $r"
             $joined -and ($r -eq $true) -and ((@(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) -join ',') -eq $own)
         } finally {
-            # The stand-in is the test's own: its draft closes unsaved and it quits through COM.
+            # The stand-in is the test's own: its draft closes unsaved and it quits through COM, from a child
+            # process, whose COM references all go when it ends (under Windows PowerShell one left in this
+            # process kept PowerPoint running).
             if (@(Get-Process POWERPNT -ErrorAction SilentlyContinue).Count) {
-                $app = New-Object -ComObject PowerPoint.Application
-                foreach ($p in @($app.Presentations)) { $p.Saved = -1; $p.Close(); [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($p) }
-                $app.Quit(); [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($app)
-                $p = $null; $app = $null
-                [GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()
+                [void](Invoke-Child '$app = New-Object -ComObject PowerPoint.Application; foreach ($p in @($app.Presentations)) { $p.Saved = -1; $p.Close() }; $app.Quit()' @())
             }
         }
     }
