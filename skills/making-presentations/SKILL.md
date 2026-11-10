@@ -72,10 +72,14 @@ Claude Code reads and writes Slides decks directly; mechanics, export and gotcha
 Functions, recipes and gotchas: `references/powerpoint.md`.
 
 - **Finishing script** (`slides/finish_deck.ps1`): reads the export, adds what it drops (videos,
-  transitions with magic as Morph, build-ins), saves with fonts embedded. Rerun freely until the first
-  hand edit.
-- **After a hand edit**: numbered in-place rounds (`slides/edits_N.ps1`) that find slides by text,
-  refuse to run twice and back up first; see "Hand edits" in the reference.
+  transitions with magic as Morph, build-ins), saves with fonts embedded. Transitions and build-ins come
+  from the Slides deck itself (`slides_manifest.py`, then `Invoke-FinishManifest`), not retyped. Rerun
+  freely until the first hand edit.
+- **After a hand edit**: `Get-DeckHandEdits` says what a person changed since the last scripted save; then
+  numbered in-place rounds (`slides/edits_N.ps1`) that change text with `Edit-DeckText` (it keeps hand
+  formatting and refuses to run twice) and back up first; see "Hand edits" in the reference.
+- **The person's PowerPoint**: scripts share the one PowerPoint with the decks the person has open. Never
+  `Stop-Process POWERPNT`; a hung one goes through `Stop-PowerPoint`, which refuses while work is unsaved.
 
 ## 5. Templates
 
@@ -85,20 +89,32 @@ Functions, recipes and gotchas: `references/powerpoint.md`.
   layouts from them. Fill placeholders, so the template's styling applies.
 - If the template has a registered slide library (tagged pattern slides), build by copying patterns.
 - A template from an AI tool's look: read its colours and fonts, assign roles, `New-TemplateFromTheme`,
-  register it; its fonts must be installed wherever the deck is edited.
+  register it; its fonts must be installed wherever the deck is edited. `New-StarterLibrary` then gives it
+  designed pattern slides, so decks on it are built by copying patterns, not as free shapes on Blank.
 
 ## 6. Review before presenting
 
-Run `Test-DeckLeftovers` and clear every hit (placeholders, TODOs, variant labels, file paths, build
-notes). Render with `Export-SlidePngs` (not LibreOffice), look at every slide, score 1 to 5, fix
-anything under 4, and report the scores and that `ppt/fonts/` holds the fonts. Run `pptx_media.py` for the size and write a copy
-with the `--goal` that fits the brief (`present`, `share` under 25 MB, `email` under 15 MB); see "Media and size" in the reference.
+Code checks what code can; look only for the rest. Details: "Checks" in the reference.
 
-| Dimension | Checks |
-|---|---|
-| Content | Every number traces to the numbers file; one message per main slide, stated in its title; claims match the sources |
-| Design | No text under 24 px on a 1920 px canvas (12 pt on a 960 pt slide); no overflow or overlap; one layout per slide kind; contrast |
-| Coherence | The titles alone tell the story; note timings sum to the slot minus a minute; main slides within budget; the backup answers the likely questions |
+1. **Scripted checks**: `pptx_check.py` with the brief's numbers file, slot and budget (leftovers, open
+   comments, numbers not in the numbers file, note timings, slide budget, embedded fonts) and
+   `Test-DeckLayout` (small text, overflow, shapes off the slide). Clear every finding, or waive it with
+   `--exclude` and a reason in the report.
+2. **Look**: `Export-ContactSheet` first (one image: consistency across slides, one layout per slide
+   kind), then `Export-SlidePngs` (not LibreOffice) for every main slide and any slide a check flagged.
+   Score 1 to 5, fix anything under 4, report the scores.
+3. **Cold read**: give a fresh subagent only the renders, not the brief or this conversation, and ask for
+   the deck's three messages and what the audience is asked to do. Compare with `BRIEF.md`: a miss is a
+   title problem. Without subagents, read the titles alone, in order, from the contact sheet.
+4. **Size**: `pptx_media.py` with the `--goal` that fits the brief (`present`, `share` under 25 MB, `email`
+   under 15 MB; `--fit` when the copy is still over); "Media and size" in the reference. A deck read alone
+   also goes out as `Export-DeckPdf -Notes`.
+
+| Dimension | Scripted | Judged by looking |
+|---|---|---|
+| Content | Every number is in the numbers file | One message per main slide, stated in its title; claims match the sources |
+| Design | No text under 24 px on a 1920 px canvas (12 pt on a 960 pt slide); no overflow; nothing off the slide | No overlap; one layout per slide kind; contrast |
+| Coherence | Note timings fit the slot minus a minute; main slides within budget | The titles alone tell the story (cold read); the backup answers the likely questions |
 
 ## Editable slides: generate from data, render native
 
@@ -110,4 +126,4 @@ generate, and every word stays editable.
 | Cards, big numbers, tables, notation, process steps, timelines | Native: slide markup in Slides (exported as text boxes, shapes, tables), or placeholders and text boxes through COM |
 | Data charts | An image from a script in the repo, regenerated when data change; title and takeaway as slide text; text inside at least 24 px on a 1920 px canvas |
 | Equations | Native: `$$latex$$` in a text box, then `pptx_equations.py` (reference, "Equations"); images as the fallback |
-| Photos, renders, screenshots, videos | Images and videos, compressed (`pptx_media.py`), at their own aspect ratio |
+| Photos, renders, screenshots, videos | Images and videos, at their own aspect ratio; `pptx_media.py` sizes each to what its slide shows |

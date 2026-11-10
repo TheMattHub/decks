@@ -21,7 +21,8 @@ An agent skill for making presentations, packaged as a Claude Code plugin. It ta
 - **One path, one source**: design in Claude Slides then finish in PowerPoint, or build on a template; once someone edits the .pptx by hand, it is changed in place by scripts and never regenerated.
 - **Templates**: register your company's .pptx/.potx, see its layouts as a picture, fill its placeholders, reuse its designed slides as a library, or generate a new template from colours and fonts. A new deck starts from three look directions to pick from.
 - **Editable slides**: tables, cards and steps as native elements, equations as native PowerPoint math from LaTeX, charts as images regenerated from data.
-- **Review and size**: a leftover check (placeholders, TODOs, file paths), slide renders scored on content, design and coherence, and a media report with a compressed copy sized for the goal: full quality to present, under 25 MB to share, under 15 MB to email.
+- **Review and size**: scripted checks first (leftovers, open comments, numbers that are not in the numbers file, note timings, slide budget, small or overflowing text), then slide renders scored on content, design and coherence and a cold read by a fresh agent. A media report with a compressed copy sized for the goal: full quality to present, under 25 MB to share, under 15 MB to email, each picture and video sized to what its slide shows.
+- **Safe beside your own work**: scripts share PowerPoint with the decks you have open, and never quit or stop a PowerPoint they did not start. What a person changed by hand is detected from a record, not asked about.
 
 ## Example decks
 
@@ -89,8 +90,10 @@ Ask for a presentation, a shorter version of one, or changes to a deck. The skil
 | `references/structures.md` | Slide skeletons for consultancy, research, marketing and internal decks |
 | `references/claude-slides.md` | Working with a Claude Slides deck, and what its PowerPoint export keeps |
 | `references/powerpoint.md` | Finishing and in-place editing with PowerPoint, equations, media size, gotchas |
-| `scripts/PptxCom.ps1` | PowerShell helpers for PowerPoint COM: find by text, videos, transitions, build-ins, fonts, renders, dumps, leftover check, layout sheet, templates, slide library |
+| `scripts/PptxCom.ps1` | PowerShell helpers for PowerPoint COM: find and replace by text, videos, transitions, build-ins, fonts, renders, contact sheet, PDF, hand-edit detection, leftover and layout checks, layout sheet, templates, slide library |
+| `scripts/pptx_check.py` | Checks on the .pptx file alone (no PowerPoint): leftovers, comments, numbers, note timings, slide budget |
 | `scripts/pptx_media.py` | Media report and a compressed copy of a .pptx, sized for presenting, sharing or email |
+| `scripts/slides_manifest.py` | Transitions and build-ins read from a Claude Slides deck's files, for the finishing step |
 | `scripts/pptx_equations.py` | `$$latex$$` paragraphs in a .pptx to native, editable equations |
 
 The logo is drawn by `docs/logo/build_logo.py` (mark, icons, avatar and social preview). `examples/build_marketing_demo.ps1` and `examples/build_demo.ps1` build the example templates, decks and the images above from fictional content; `examples/make_art.py` draws the illustrations.

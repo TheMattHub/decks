@@ -35,6 +35,11 @@ The user runs the export from the deck (Share > Export).
 - **Kept**: layout, text as native text boxes, tables as native tables, shapes, images, speaker notes,
   some embedded fonts.
 - **Dropped**: videos, transitions and build-ins. `references/powerpoint.md` adds them back.
+- **Transitions and build-ins from the deck itself**: fetch the deck's files (`project/deck.json` and
+  `project/slides/*.html`) into one folder, each at its deck path (the Artifact tool's `read` with `paths`),
+  then `uv run "<skill>/scripts/slides_manifest.py" <folder> manifest.json`. `Invoke-FinishManifest` applies
+  the manifest to the export. A structure the script does not recognise stops it with one line (then write
+  the finishing calls by hand, as before); unknown effect names are only warned about.
 - **Generic names**: shapes are called "Text 3", "Shape 2", "Table 0", and text uses theme colours that
   COM cannot read back. Finishing scripts therefore find shapes by their text and write colours as
   fixed hex values.

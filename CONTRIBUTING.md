@@ -30,7 +30,14 @@ uv run --with pytest --with python-pptx --with pillow --with imageio-ffmpeg --wi
 pwsh -NoProfile -File tests/check_ps.ps1
 ```
 
-CI has no PowerPoint: test COM changes by hand on a copy of a deck and say in the pull request what you ran and what you saw (a slide render helps).
+CI has no PowerPoint: after a change to `PptxCom.ps1`, run the COM smoke test locally, under both shells, and say so in the pull request (a slide render helps). It builds throwaway decks in the temp folder and leaves an open PowerPoint of yours alone.
+
+```powershell
+pwsh -NoProfile -File tests/com_smoke.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/com_smoke.ps1
+```
+
+A check that needs only the .pptx file belongs in `pptx_check.py`, where CI covers it; one that needs PowerPoint's layout belongs in `PptxCom.ps1`. The two leftover checks share `tests/leftover_cases.txt`: change both together.
 
 ## Practical notes
 
