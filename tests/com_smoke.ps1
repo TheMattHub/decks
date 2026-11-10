@@ -362,6 +362,65 @@ function Invoke-StarterChecks {
 }
 Invoke-StarterChecks
 
+# --- F2: Invoke-FinishManifest -------------------------------------------------------------------------
+function Invoke-ManifestChecks {
+    $media = Join-Path $work "media"
+    New-Item -ItemType Directory -Force $media | Out-Null
+    # A real clip: PowerPoint refuses a file that is not media. ffmpeg comes with imageio-ffmpeg, through uv.
+    # Under Windows PowerShell, a native command's stderr line is an error, which "Stop" makes fatal.
+    $ff = & { $ErrorActionPreference = "Continue"; uv run --with imageio-ffmpeg python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())" 2>$null }
+    if ($ff) { & $ff -y -loglevel error -f lavfi -i testsrc=size=320x180:rate=10 -t 1 -pix_fmt yuv420p (Join-Path $media "ab12.mp4") }
+    $long = "Costs fell 12% in the third quarter, with every depot on the new schedule from July"
+    $s = New-DeckFromTemplate $tpl
+    try {
+        $d = $s.Deck
+        $one = Add-LayoutSlide $d '^Blank$'; [void](Add-TextBox $one 40 40 800 60 "Q3   review" "Segoe UI" 32 "#000000")
+        $two = Add-LayoutSlide $d '^Blank$'; [void](Add-TextBox $two 40 40 800 60 "Results" "Segoe UI" 32 "#000000")
+        $cost = Add-TextBox $two 40 140 800 60 $long "Segoe UI" 18 "#000000"
+        $g1 = Add-TextBox $two 40 260 300 40 "Grouped point" "Segoe UI" 18 "#000000"
+        $g2 = Add-TextBox $two 40 300 300 40 "Its label" "Segoe UI" 18 "#000000"
+        $grp = $two.Shapes.Range([object[]]@($g1.Name, $g2.Name)).Group()
+        $three = Add-LayoutSlide $d '^Blank$'; [void](Add-TextBox $three 40 40 800 60 "Film" "Segoe UI" 32 "#000000")
+        function Write-Manifest($slides) {
+            $f = Join-Path $work ("manifest-" + [guid]::NewGuid().ToString("N").Substring(0, 6) + ".json")
+            [System.IO.File]::WriteAllText($f, (@{ deck = "Q3 review"; canvas_width = 1920; canvas_height = 1080; slides = $slides } | ConvertTo-Json -Depth 6))
+            $f
+        }
+        $good = Write-Manifest @(
+            @{ index = 1; id = "cover"; title = "Q3 review"; transition = "fade"; builds = @(); videos = @() },
+            @{ index = 2; id = "results"; title = "Results"; transition = "push"; videos = @()
+               builds = @(@{ effect = "rise"; text = $long.Substring(0, 60) }, @{ effect = "pop"; text = "Grouped point" }, @{ effect = "fade"; text = "" }) },
+            @{ index = 3; id = "film"; title = "Film"; transition = "magic"; builds = @()
+               videos = @(@{ src = "/_blob/ab12"; poster = "/_blob/missing"; box = @{ x = 192; y = 108; w = 960; h = 540 } }) })
+        $bad = Write-Manifest @(
+            @{ index = 1; id = "cover"; title = "Q3 overview"; transition = "spin"; builds = @(); videos = @() },
+            @{ index = 2; id = "results"; title = "Results"; transition = $null; videos = @(); builds = @(@{ effect = "rise"; text = "Revenue" }) },
+            @{ index = 3; id = "film"; title = ""; transition = $null; builds = @(); videos = @(@{ src = "/_blob/nothere"; poster = $null; box = $null }) },
+            @{ index = 4; id = "extra"; title = "Extra"; transition = $null; builds = @(); videos = @() })
+        Check "F2 a manifest that cannot be applied throws once, listing every item, and changes nothing" {
+            $before = @(Get-DeckDump $d) -join "`n"
+            $msg = try { Invoke-FinishManifest $d $bad $media; "did not throw" } catch { $_.Exception.Message }
+            $want = "3 slides, the manifest 4|slide 1: title 'Q3 overview'|unknown transition 'spin'|0 shapes start with 'Revenue'|no file for video '/_blob/nothere'|slide 4 \(extra\): not in"
+            $missing = @($want -split '\|' | Where-Object { $msg -notmatch $_ })
+            if ($missing.Count) { "missing: " + ($missing -join ', ') + " in: " + $msg } else { (@(Get-DeckDump $d) -join "`n") -eq $before }
+        }
+        Check "F2 transitions, builds by text (a 60-character prefix, a group), the video in its scaled box" {
+            if (-not $ff) { return "no ffmpeg (uv with imageio-ffmpeg) to make a clip" }
+            $warn = @(Invoke-FinishManifest $d $good $media 3>&1)          # it outputs nothing but warnings
+            $seq = $two.TimeLine.MainSequence
+            $v = @(@($three.Shapes) | Where-Object { $_.Type -eq $MsoMedia })
+            "warnings $($warn.Count)"
+            ($one.SlideShowTransition.EntryEffect -eq $PpFade) -and ($two.SlideShowTransition.EntryEffect -eq $PpPushUp) -and
+                ($three.SlideShowTransition.EntryEffect -eq $PpMorph) -and ($seq.Count -eq 2) -and
+                ($seq.Item(1).Shape.Name -eq $cost.Name) -and ($seq.Item(1).EffectType -eq $MsoRiseUp) -and
+                ($seq.Item(2).Shape.Name -eq $grp.Name) -and ($seq.Item(2).EffectType -eq $MsoZoom) -and
+                ($v.Count -eq 1) -and ([math]::Round($v[0].Left) -eq 96) -and ([math]::Round($v[0].Top) -eq 54) -and
+                ([math]::Round($v[0].Width) -eq 480) -and ($warn.Count -eq 2)
+        }
+    } finally { Close-Deck $s }
+}
+Invoke-ManifestChecks
+
 Check "W-B a record written under the other shell gives no hand edits under this one" {
     $other = if ($PSVersionTable.PSEdition -eq "Core") { "powershell.exe" } else { "pwsh" }
     $f = Join-Path $work "shells.pptx"

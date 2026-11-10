@@ -285,6 +285,78 @@ function Add-BuildIn($slide, $shapes, $effect = $MsoFadeIn, $trigger = $OnClick,
     }
 }
 
+# Applies a manifest from slides_manifest.py (its docstring is the schema) to the PowerPoint export of a
+# Claude Slides deck: transitions, build-ins and videos, which the export drops. Slide i of the manifest is
+# slide i of the deck; its title, whitespace collapsed and compared literally, must be one of the slide's
+# texts (an empty title is not checked). A build finds its shape by text: the one top-level shape holding a
+# text that starts with the build's text. A build without text (an image) is skipped with a warning. A
+# video's file is the one in $mediaDir named like the last segment of its src (with or without extension);
+# a video without a box fills the slide. Everything is checked first: when anything cannot be applied, it
+# throws once listing every item and the deck is not changed. Run it once per export (it adds, never replaces).
+function Invoke-FinishManifest($deck, [string]$manifestPath, [string]$mediaDir) {
+    $m = [System.IO.File]::ReadAllText((Resolve-Path $manifestPath).Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    function Squash($t) { ([string]$t -replace '\s+', ' ').Trim() }
+    # Windows PowerShell turns an empty JSON list into $null, and @($null) has one item: hence the filter.
+    function Items($list) { @($list | Where-Object { $null -ne $_ }) }
+    $transitions = @{ fade = $PpFade; push = $PpPushUp; magic = $PpMorph }
+    $effects = @{ rise = $MsoRiseUp; fade = $MsoFadeIn; pop = $MsoZoom }
+    $media = if ($mediaDir) { @(Get-ChildItem -LiteralPath $mediaDir -File) } else { @() }
+    function Find-Media([string]$src) {
+        $leaf = ($src -split '[\\/]')[-1]
+        if ($leaf) { $media | Where-Object { $_.Name -eq $leaf -or $_.BaseName -eq $leaf } | Select-Object -First 1 }
+    }
+    $W = $deck.PageSetup.SlideWidth; $H = $deck.PageSetup.SlideHeight
+    $k = $W / $m.canvas_width
+    $problems = New-Object System.Collections.ArrayList
+    $todo = New-Object System.Collections.ArrayList
+    $slides = Items $m.slides
+    if ($slides.Count -ne $deck.Slides.Count) { [void]$problems.Add("the deck has $($deck.Slides.Count) slides, the manifest $($slides.Count)") }
+    foreach ($ms in $slides) {
+        $n = [int]$ms.index
+        if ($n -lt 1 -or $n -gt $deck.Slides.Count) { [void]$problems.Add("slide $n ($($ms.id)): not in the deck"); continue }
+        $slide = $deck.Slides.Item($n)
+        $title = Squash $ms.title
+        if ($title -and @(Get-SlideTexts $slide | ForEach-Object { Squash $_ }) -cnotcontains $title) {
+            [void]$problems.Add("slide ${n}: title '$title' is not on it (slides moved, or the export changed)")
+        }
+        if ($ms.transition) {
+            if ($transitions.ContainsKey([string]$ms.transition)) { [void]$todo.Add(@("transition", $slide, $transitions[[string]$ms.transition])) }
+            else { [void]$problems.Add("slide ${n}: unknown transition '$($ms.transition)'") }
+        }
+        foreach ($b in (Items $ms.builds)) {
+            $text = Squash $b.text
+            if (-not $effects.ContainsKey([string]$b.effect)) { [void]$problems.Add("slide ${n}: unknown build '$($b.effect)' on '$text'"); continue }
+            if (-not $text) { Write-Warning "slide ${n}: a '$($b.effect)' build on an element without text cannot be found by text; add it by hand"; continue }
+            # Animations go on top-level shapes: a match inside a group or table animates the group or table.
+            $hits = @(foreach ($sh in @($slide.Shapes)) {
+                if (@(Get-ShapeTextItems $sh | Where-Object { (Squash $_.Shape.TextFrame.TextRange.Text).StartsWith($text, [System.StringComparison]::Ordinal) }).Count) { $sh }
+            })
+            if ($hits.Count -eq 1) { [void]$todo.Add(@("build", $slide, $effects[[string]$b.effect], $hits[0])) }
+            else { [void]$problems.Add("slide ${n}: $($hits.Count) shapes start with '$text' (one needed for the '$($b.effect)' build)") }
+        }
+        foreach ($v in (Items $ms.videos)) {
+            $file = Find-Media $v.src
+            if (-not $mediaDir) { [void]$problems.Add("slide ${n}: video '$($v.src)' needs a media folder"); continue }
+            if (-not $file) { [void]$problems.Add("slide ${n}: no file for video '$($v.src)' in $mediaDir"); continue }
+            $poster = $null
+            if ($v.poster) {
+                $poster = Find-Media $v.poster
+                if (-not $poster) { Write-Warning "slide ${n}: no poster file for '$($v.poster)' in ${mediaDir}: the video shows its first frame" }
+            }
+            $box = if ($v.box) { @(($v.box.x * $k), ($v.box.y * $k), ($v.box.w * $k), ($v.box.h * $k)) } else { @(0, 0, $W, $H) }
+            [void]$todo.Add(@("video", $slide, $file.FullName, $(if ($poster) { $poster.FullName } else { "" }), $box))
+        }
+    }
+    if ($problems.Count) { throw ("Invoke-FinishManifest: nothing applied, because:`n  " + ($problems -join "`n  ")) }
+    foreach ($t in $todo) {
+        switch ($t[0]) {
+            "transition" { Set-Transition $t[1] $t[2] }
+            "build" { Add-BuildIn $t[1] $t[3] $t[2] }
+            "video" { $b = $t[4]; [void](Add-Video $t[1] $t[2] $t[3] ([single]$b[0]) ([single]$b[1]) ([single]$b[2]) ([single]$b[3])) }
+        }
+    }
+}
+
 # --- templates ------------------------------------------------------------------------------------
 # Template paths live in ~/.claude/decks.json, outside any repository, so company files are never committed:
 #   { "templates": { "acme": { "path": "C:\\...\\Template Acme.pptx", "library": "C:\\...\\Acme library.pptx", "use": "client and marketing decks" } } }
