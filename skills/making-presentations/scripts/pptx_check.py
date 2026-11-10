@@ -16,7 +16,8 @@ finding, `slide N  <check>  <detail>`, and exits 1 when there is any finding. Ch
   comment   a slide with review comments (legacy or modern), with their count.
   number    (--numbers FILE) a number in slide text (not notes) that FILE does not contain. Values are
             compared, not strings: 1,200 = 1 200 = 1200; 3,5 = 3.5; 38% = 38 %. A lone digit (Step 3) and
-            digits inside a word (Q3, N01) are skipped. Years are checked like any number.
+            digits inside a word (Q3, N01) are skipped. Years are checked like any number. A token grouped
+            only by spaces (17 312) also passes when every part is in FILE.
   timing    notes start with the slide's start time, `m:ss.` (e.g. `2:30.`). A main slide without one, one
             that starts no later than the previous, with --slot M a last main slide starting after M minus
             one minute, or notes that take over 1.3 times the slide's time to say at 150 words a minute.
@@ -49,18 +50,25 @@ START = re.compile(r"^\s*(\d{1,2}):(\d{2})\.")
 # A separator followed by exactly three digits groups thousands; any other comma or dot is the decimal mark.
 NUMBER = re.compile(r"(?<!\w)(\d{1,3}(?:[ \u00a0\u202f,.]\d{3})+(?!\d)(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(?!\w)")
 LINEBREAKS = re.compile(r"[\r\n\v]+")
-GROUPED = re.compile(r"^\d{1,3}(?:[ \u00a0\u202f,.]\d{3})+$")
+GROUPED = re.compile(r"^(\d{1,3}(?:[ \u00a0\u202f,.]\d{3})+)(?:[.,]\d+)?$")
 
 
 def numbers_in(text):
-    """(token as written, value) for each number worth checking."""
+    """(token as written, value, parts) for each number worth checking. parts is set only for a token grouped
+    by spaces alone ("17 312"): it may be two numbers side by side, so each part is an alternative reading."""
     out = []
     for m in NUMBER.finditer(text):
         tok = m.group(1)
         if re.fullmatch(r"\d", tok):  # "Step 3"
             continue
-        digits = re.sub(r"[   ,.]", "", tok) if GROUPED.match(tok) else tok.replace(",", ".")
-        out.append((tok, Decimal(digits).normalize()))
+        g = GROUPED.match(tok)
+        if g:  # thousands groups, then perhaps a decimal tail ("1,234.56", "1.234,5")
+            whole = re.sub(r"[   ,.]", "", g.group(1))
+            digits = whole + ("." + tok[g.end(1) + 1:] if tok[g.end(1):] else "")
+        else:
+            digits = tok.replace(",", ".")
+        parts = re.split(r"[   ]", tok) if re.fullmatch(r"\d{1,3}(?:[   ]\d{3})+", tok) else None
+        out.append((tok, Decimal(digits).normalize(), [Decimal(p) for p in parts] if parts else None))
     return out
 
 
@@ -135,7 +143,7 @@ def main():
     allowed = None
     if a.numbers:
         with open(a.numbers, encoding="utf-8") as f:
-            allowed = {v for _, v in numbers_in(f.read())}
+            allowed = {v for _, v, _ in numbers_in(f.read())}
 
     for n, s in enumerate(slides, 1):
         texts = list(shape_texts(s.shapes))
@@ -151,8 +159,10 @@ def main():
         if allowed is not None:
             seen = set()
             for _, text in texts:
-                for tok, v in numbers_in(text):
-                    if v not in allowed and v not in seen:
+                for tok, v, parts in numbers_in(text):
+                    if v in allowed or (parts and all(p in allowed for p in parts)):
+                        continue
+                    if v not in seen:
                         seen.add(v)
                         add(n, "number", f"{tok} is not in {a.numbers}")
 

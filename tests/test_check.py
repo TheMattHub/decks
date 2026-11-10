@@ -276,3 +276,25 @@ def test_backup_slides_do_not_count_and_backup_title_overrides(tmp_path):
     assert len(findings(check(deck, "--backup-title", "^reserve", "--budget", 1), "budget")) == 1
     r = check(deck, "--backup-title", "^reserve")
     assert "slides: 2 main, 3 backup" in r.stdout
+
+
+def test_grouped_numbers_with_a_decimal_tail_are_compared_by_value(tmp_path):
+    deck = build(tmp_path, [{"texts": ["1,234.56 EUR", "1.234,5 kg"]}])
+    r = check(deck, "--numbers", numbers_file(tmp_path, "1234.56\n1234.5\n"))
+    assert r.returncode == 0 and "Traceback" not in r.stderr, r.stderr
+    assert findings(r, "number") == []
+    assert len(findings(check(deck, "--numbers", numbers_file(tmp_path, "17\n")), "number")) == 2
+
+
+def test_numbers_file_may_contain_a_grouped_decimal(tmp_path):
+    deck = build(tmp_path, [{"texts": ["1234.56 EUR"]}])
+    r = check(deck, "--numbers", numbers_file(tmp_path, "1,234.56\n"))
+    assert r.returncode == 0 and findings(r, "number") == [], r.stderr
+
+
+def test_space_grouped_number_passes_when_every_part_is_listed(tmp_path):
+    deck = build(tmp_path, [{"texts": ["17 312 trucks"]}])
+    assert findings(check(deck, "--numbers", numbers_file(tmp_path)), "number") == []
+    deck = build(tmp_path, [{"texts": ["42 312 trucks"]}], "b.pptx")
+    out = findings(check(deck, "--numbers", numbers_file(tmp_path)), "number")
+    assert len(out) == 1 and "42 312" in out[0]
