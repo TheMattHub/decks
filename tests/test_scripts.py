@@ -227,3 +227,25 @@ def test_footprint_media_also_on_a_layout_keeps_the_plain_cap(tmp_path):
     slide.slide_layout.part.relate_to(slide.part.related_part(pic._element.blip_rId),
                                       "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image")
     assert near(media_size(prs, tmp_path), (1920, 1080))
+
+
+def test_media_fit_steps_down_until_under_the_limit(tmp_path):
+    deck = deck_with_big_picture(tmp_path)  # noise: 4000 px is ~21 MB, 3200 px ~10 MB
+    out = tmp_path / "out.pptx"
+    r = run("pptx_media.py", deck, out, "--skip-video", "--goal", "email", "--max-px", 4000, "--fit")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "kept: 3200 px" in r.stdout
+    with zipfile.ZipFile(out) as z, z.open("ppt/media/image1.png") as f:
+        assert max(Image.open(f).size) == 3200
+
+
+def test_media_fit_exits_1_when_the_last_step_is_still_over(tmp_path):
+    deck = deck_with_big_picture(tmp_path)
+    r = run("pptx_media.py", deck, tmp_path / "out.pptx", "--skip-video", "--goal", "email", "--max-px", 12000, "--fit")
+    assert r.returncode == 1 and "--fit step 4" in r.stdout
+
+
+def test_media_fit_without_a_limit_does_nothing(tmp_path):
+    deck = deck_with_big_picture(tmp_path)
+    r = run("pptx_media.py", deck, tmp_path / "out.pptx", "--skip-video", "--fit")
+    assert r.returncode == 0 and "nothing to fit" in r.stdout and "step" not in r.stdout

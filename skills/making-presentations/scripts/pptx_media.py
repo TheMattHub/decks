@@ -23,12 +23,17 @@ slides display, measured as if the cap were the pixel count across the slide's l
 never upscaled. A file used where the size is unknown (layout, master, background, fill) keeps the plain
 cap. --no-footprint turns this off.
 
+The exit code is 1 when the copy was written but is still over the goal's size limit. --fit writes it again
+from the original, up to 4 times, each step with both pixel caps x0.8, JPEG quality -5 (not under 50) and
+CRF +2 (not over 34), until it is under the limit; the settings of the copy that was kept are printed.
+
 Every part keeps its name and format, so slides, crops, trims and play settings are untouched. A file
 is replaced only when the new version is smaller. Pictures wider or taller than the cap are scaled
 down; JPEGs are re-saved at the quality; PNGs are re-saved optimised. Videos are re-encoded to H.264
 with the same length, so PowerPoint's trims still hold. ffmpeg comes from imageio-ffmpeg, or from PATH.
 """
 import argparse
+import copy
 import io
 import os
 import re
@@ -182,6 +187,36 @@ def mb(n):
     return f"{n / 1e6:7.2f} MB"
 
 
+def write_copy(z, dst, ffmpeg, feet, max_px, video_px, quality, crf):
+    """Write the shrunk copy of the open deck to dst; returns its size and the media bytes saved."""
+    saved = 0
+    try:
+        with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as out:
+            for item in z.infolist():
+                data = z.read(item)
+                ext = os.path.splitext(item.filename)[1].lower()
+                new = None
+                if item.filename.startswith("ppt/media/"):
+                    try:
+                        if ext in PICTURES:
+                            new = shrink_picture(data, ext, max_px, quality, feet.get(item.filename))
+                        elif ext in VIDEOS and ffmpeg:
+                            new = shrink_video(data, ext, crf, ffmpeg, video_px, feet.get(item.filename))
+                    except Exception as e:  # one odd file must not stop the rest
+                        print(f"  kept {item.filename[10:]}: {e}")
+                if new is not None and len(new) < len(data):
+                    print(f"  {item.filename[10:]}: {mb(len(data))} -> {mb(len(new))}")
+                    saved += len(data) - len(new)
+                    data = new
+                # Media are already compressed: store them, deflate the XML.
+                kind = zipfile.ZIP_STORED if item.filename.startswith("ppt/media/") else zipfile.ZIP_DEFLATED
+                out.writestr(copy.copy(item), data, compress_type=kind)  # writestr edits the ZipInfo; z is read again per step
+    except BaseException:
+        dst.unlink(missing_ok=True)
+        raise
+    return dst.stat().st_size, saved
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input")
@@ -192,6 +227,7 @@ def main():
     ap.add_argument("--jpeg-quality", type=int)
     ap.add_argument("--crf", type=int, help="video quality: higher is smaller, 28 for small cards")
     ap.add_argument("--no-footprint", action="store_true", help="cap by pixels only, not by displayed size")
+    ap.add_argument("--fit", action="store_true", help="when over the goal's limit, retry with smaller settings")
     ap.add_argument("--skip-video", action="store_true")
     a = ap.parse_args()
     max_px, video_px, quality, crf, limit = GOALS[a.goal]
@@ -217,32 +253,21 @@ def main():
         if not a.skip_video and not ffmpeg:
             print("no ffmpeg found: videos are left as they are")
         feet = {} if a.no_footprint else footprints(z)
-        saved = 0
-        try:
-            with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as out:
-                for item in z.infolist():
-                    data = z.read(item)
-                    ext = os.path.splitext(item.filename)[1].lower()
-                    new = None
-                    if item.filename.startswith("ppt/media/"):
-                        try:
-                            if ext in PICTURES:
-                                new = shrink_picture(data, ext, max_px, quality, feet.get(item.filename))
-                            elif ext in VIDEOS and ffmpeg:
-                                new = shrink_video(data, ext, crf, ffmpeg, video_px, feet.get(item.filename))
-                        except Exception as e:  # one odd file must not stop the rest
-                            print(f"  kept {item.filename[10:]}: {e}")
-                    if new is not None and len(new) < len(data):
-                        print(f"  {item.filename[10:]}: {mb(len(data))} -> {mb(len(new))}")
-                        saved += len(data) - len(new)
-                        data = new
-                    # Media are already compressed: store them, deflate the XML.
-                    kind = zipfile.ZIP_STORED if item.filename.startswith("ppt/media/") else zipfile.ZIP_DEFLATED
-                    out.writestr(item, data, compress_type=kind)
-        except BaseException:
-            dst.unlink(missing_ok=True)
-            raise
-        size = dst.stat().st_size
+        settings = (max_px, video_px, quality, crf)
+        size, saved = write_copy(z, dst, ffmpeg, feet, *settings)
+        if a.fit and not limit:
+            print(f"--fit: goal {a.goal} has no size limit, nothing to fit")
+        # Each step starts again from the original media: re-compressing a compressed copy only adds loss.
+        for step in range(1, 5 if a.fit and limit else 1):
+            if size <= limit:
+                break
+            settings = (round(max_px * 0.8 ** step), round(video_px * 0.8 ** step),
+                        min(quality, max(50, quality - 5 * step)), max(crf, min(34, crf + 2 * step)))
+            print(f"over {limit / 1e6:.0f} MB, --fit step {step}: {settings[0]} px, video {settings[1]} px, "
+                  f"JPEG {settings[2]}, CRF {settings[3]}")
+            size, saved = write_copy(z, dst, ffmpeg, feet, *settings)
+        if a.fit and limit:
+            print("kept: {} px, video {} px, JPEG {}, CRF {}".format(*settings))
         print(f"{dst.name}: {mb(size)} (media {mb(saved)} smaller), goal {a.goal}")
         if limit and size > limit:
             print(f"still over {limit / 1e6:.0f} MB for {a.goal}: cut or shorten the largest files above, "
