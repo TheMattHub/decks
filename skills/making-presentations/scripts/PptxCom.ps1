@@ -224,7 +224,9 @@ function Set-Notes($slide, [string]$text) {
 function Add-TextBox($slide, $left, $top, $width, $height, [string]$text, [string]$font, $size, [string]$color) {
     $b = $slide.Shapes.AddTextbox(1, $left, $top, $width, $height)
     $b.TextFrame.AutoSize = 0; $b.Height = [single]$height; $b.TextFrame.WordWrap = -1
-    $r = $b.TextFrame.TextRange; $r.Text = $text; $r.Font.Name = $font; $r.Font.Size = $size
+    # [single] always: PowerShell caches a COM property set by its argument type, so an int size in one call
+    # and a fractional one in a later call fail with "Unable to cast ... to System.Int32".
+    $r = $b.TextFrame.TextRange; $r.Text = $text; $r.Font.Name = $font; $r.Font.Size = [single]$size
     $r.Font.Color.RGB = ConvertTo-Bgr $color
     $b
 }
@@ -400,6 +402,97 @@ function Add-FromLibrary($deck, [string]$role, [hashtable]$texts) {
 function Remove-LibrarySlides($deck) {
     $tagged = @(@($deck.Slides) | Where-Object { Get-SlideRole $_ })
     foreach ($s in $tagged) { $s.Delete() }
+}
+
+# A starter slide library for a template that has none (one from New-TemplateFromTheme): designed pattern
+# slides tagged cover, section, cards, big-numbers, quote, timeline and closing, saved to $out. Colours are
+# theme colours and fonts are the theme's heading and body fonts, so the library follows the template.
+# Geometry is drawn for 960 x 540 and scaled to the slide size. Every sample text starts with
+# "[placeholder]", so one left unreplaced is a Test-DeckLeftovers finding.
+function New-StarterLibrary([string]$template, [string]$out) {
+    $s = New-DeckFromTemplate $template
+    try {
+        $d = $s.Deck
+        $kx = $d.PageSetup.SlideWidth / 960; $ky = $d.PageSetup.SlideHeight / 540
+        $layouts = @($d.Designs.Item(1).SlideMaster.CustomLayouts)
+        $layout = @($layouts | Where-Object { $_.Name -eq 'Blank' }) + @($layouts | Sort-Object { $_.Shapes.Placeholders.Count }) | Select-Object -First 1
+        $dk1 = 1; $lt1 = 2; $dk2 = 3; $lt2 = 4; $acc1 = 5                  # msoThemeColorIndex
+        function Pattern($role, $bg) {
+            $sl = $d.Slides.AddSlide($d.Slides.Count + 1, $layout)
+            foreach ($p in @($sl.Shapes.Placeholders)) { $p.Delete() }
+            $sl.FollowMasterBackground = 0; $sl.Background.Fill.Solid(); $sl.Background.Fill.ForeColor.ObjectThemeColor = $bg
+            Set-SlideRole $sl $role
+            $sl
+        }
+        function Shape($sl, $type, $x, $y, $w, $h, $color) {
+            $r = $sl.Shapes.AddShape($type, [single]($x * $kx), [single]($y * $ky), [single]($w * $kx), [single]($h * $ky))
+            $r.Fill.ForeColor.ObjectThemeColor = $color; $r.Line.Visible = 0
+        }
+        # "+mj-lt" and "+mn-lt" are the theme's heading and body fonts. -Bottom anchors the text to the box's
+        # foot, so a title of one line or three ends at the same height, just above what follows it.
+        function Text($sl, $x, $y, $w, $h, $text, $size, $color, [switch]$Heading, [switch]$Bold, [switch]$Raw, [switch]$Bottom) {
+            if (-not $Raw) { $text = "[placeholder] " + $text }
+            $b = Add-TextBox $sl ($x * $kx) ($y * $ky) ($w * $kx) ($h * $ky) $text $(if ($Heading) { "+mj-lt" } else { "+mn-lt" }) ($size * $kx) "#000000"
+            $b.TextFrame.TextRange.Font.Color.ObjectThemeColor = $color
+            if ($Bold) { $b.TextFrame.TextRange.Font.Bold = -1 }
+            if ($Bottom) { $b.TextFrame.VerticalAnchor = 4 }             # msoAnchorBottom
+        }
+        $names = "one", "two", "three", "four"
+        $col = (832 - 2 * 24) / 3                                       # three columns between 64 pt margins
+
+        $c = Pattern "cover" $dk1
+        Text $c 64 120 832 230 "Deck title in a few words" 52 $lt1 -Heading -Bold -Bottom
+        Shape $c 1 64 364 72 6 $acc1
+        Text $c 64 384 832 40 "Subtitle - who, where, when" 22 $lt2
+
+        $c = Pattern "section" $dk2
+        Text $c 64 150 832 160 "Section title" 44 $lt1 -Heading -Bold -Bottom
+        Shape $c 1 64 324 72 6 $acc1
+        Text $c 64 344 832 36 "Part 1 - what this part answers" 20 $lt2
+
+        $c = Pattern "cards" $lt1
+        Text $c 64 44 832 90 "Slide title that makes the point" 32 $dk1 -Heading -Bold
+        for ($i = 0; $i -lt 3; $i++) {
+            $x = 64 + $i * ($col + 24)
+            Shape $c 1 $x 160 $col 280 $lt2
+            Shape $c 1 $x 160 $col 6 $acc1
+            Text $c ($x + 20) 186 ($col - 40) 66 ("Card " + $names[$i]) 24 $dk1 -Heading -Bold
+            Text $c ($x + 20) 256 ($col - 40) 170 ("Two or three lines on what card " + $names[$i] + " says.") 18 $dk2
+        }
+
+        $c = Pattern "big-numbers" $dk1
+        Text $c 64 44 832 90 "Slide title that makes the point" 32 $lt1 -Heading -Bold
+        $nums = "38%", "120", "4"
+        for ($i = 0; $i -lt 3; $i++) {
+            $x = 64 + $i * ($col + 24)
+            Text $c $x 120 $col 214 $nums[$i] 72 $lt1 -Heading -Bold -Bottom
+            Shape $c 1 $x 346 48 6 $acc1
+            Text $c $x 362 ($col - 16) 100 ("what number " + $names[$i] + " counts") 20 $lt2
+        }
+
+        $c = Pattern "quote" $lt2
+        Text $c 80 60 120 150 ([string][char]0x201C) 120 $acc1 -Heading -Bold -Raw   # an opening quote mark
+        Text $c 96 190 768 170 "A sentence a customer or expert said, in their own words." 34 $dk1 -Heading
+        Text $c 96 380 768 40 "Name, role, organisation" 18 $dk2
+
+        $c = Pattern "timeline" $lt1
+        Text $c 64 44 832 90 "Plan in four steps" 32 $dk1 -Heading -Bold
+        $ln = $c.Shapes.AddLine([single]((64 + 16) * $kx), [single](250 * $ky), [single]((64 + 3 * 208 + 16) * $kx), [single](250 * $ky))
+        $ln.Line.ForeColor.ObjectThemeColor = $acc1; $ln.Line.Weight = [single](3 * $kx)
+        for ($i = 0; $i -lt 4; $i++) {
+            $x = 64 + $i * 208
+            Shape $c 9 $x 234 32 32 $acc1                                 # msoShapeOval
+            Text $c $x 262 192 64 ("Step " + $names[$i]) 22 $dk1 -Heading -Bold -Bottom
+            Text $c $x 330 184 130 ("What happens in step " + $names[$i] + ".") 18 $dk2
+        }
+
+        $c = Pattern "closing" $dk1
+        Text $c 64 120 832 230 "The ask, or the one thing to remember" 48 $lt1 -Heading -Bold -Bottom
+        Shape $c 1 64 364 72 6 $acc1
+        Text $c 64 384 832 40 "Next step - name, e-mail" 22 $lt2
+
+        Save-Deck $s $out
+    } finally { Close-Deck $s }
 }
 
 # Appends a slide on the first layout (any design) whose name matches $pattern.

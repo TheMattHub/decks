@@ -331,6 +331,37 @@ function Invoke-LayoutChecks {
 }
 Invoke-LayoutChecks
 
+# --- F1: starter library -------------------------------------------------------------------------------
+function Invoke-StarterChecks {
+    $libPath = Join-Path $work "Smoke library.pptx"
+    New-StarterLibrary $tpl $libPath
+    $roles = "cover", "section", "cards", "big-numbers", "quote", "timeline", "closing"
+    $s = New-DeckFromTemplate $libPath -KeepSlides
+    try {
+        $d = $s.Deck
+        Check "F1 New-StarterLibrary tags one pattern per role, every sample text starting [placeholder]" {
+            $l = @(Get-SlideLibrary $d)
+            $bad = @(foreach ($p in $l) { foreach ($t in @(Get-SlideTexts $d.Slides.Item($p.Slide))) { if ($t -and -not $t.StartsWith("[placeholder]") -and $t -ne [string][char]0x201C) { $t } } })
+            (($l | ForEach-Object { $_.Role }) -join ',') -eq ($roles -join ',') -and -not $bad.Count
+        }
+        Check "F1 a deck built from every role, every placeholder replaced: no leftovers, no layout findings" {
+            foreach ($role in $roles) {
+                # The pattern's own texts without the prefix: realistic lengths for the boxes.
+                $pattern = @(@($d.Slides) | Where-Object { (Get-SlideRole $_) -eq $role })[0]
+                $texts = @{}
+                foreach ($t in @(Get-SlideTexts $pattern)) { if ($t.StartsWith("[placeholder] ")) { $texts['^' + [regex]::Escape($t) + '$'] = $t.Substring(14) } }
+                [void](Add-FromLibrary $d $role $texts)
+            }
+            Remove-LibrarySlides $d
+            Export-ContactSheet $d (Join-Path $work "starter.png")
+            $f = @(Test-DeckLeftovers $d) + @(Test-DeckLayout $d)
+            if ($f.Count) { ($f | ForEach-Object { "$($_.Slide) $($_.Where) $($_.Check)$($_.Match) $($_.Detail)$($_.Text)" }) -join '; ' }
+            else { ($d.Slides.Count -eq $roles.Count) }
+        }
+    } finally { Close-Deck $s }
+}
+Invoke-StarterChecks
+
 Check "W-B a record written under the other shell gives no hand edits under this one" {
     $other = if ($PSVersionTable.PSEdition -eq "Core") { "powershell.exe" } else { "pwsh" }
     $f = Join-Path $work "shells.pptx"
